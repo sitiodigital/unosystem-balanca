@@ -10,16 +10,28 @@ function startElectron() {
   // Matar processo anterior se existir
   if (electronProcess) {
     console.log('🔄 Reiniciando Electron...');
-    electronProcess.kill('SIGTERM');
+    if (process.platform === 'win32') {
+      electronProcess.kill();
+    } else {
+      electronProcess.kill('SIGTERM');
+    }
     electronProcess = null;
   }
 
   // Aguardar um pouco para garantir que o build terminou
   setTimeout(() => {
     console.log('🚀 Iniciando Electron...');
-    electronProcess = spawn('npx', ['electron', '.'], {
+    
+    // No Windows, usar pnpm exec ou encontrar o executável diretamente
+    // No macOS/Linux, usar npx
+    const isWindows = process.platform === 'win32';
+    const electronCommand = isWindows ? 'pnpm' : 'npx';
+    const electronArgs = isWindows ? ['exec', 'electron', '.'] : ['electron', '.'];
+    
+    electronProcess = spawn(electronCommand, electronArgs, {
       stdio: 'inherit',
-      shell: false,
+      shell: isWindows, // No Windows precisa de shell para encontrar pnpm
+      cwd: path.join(__dirname, '..'),
     });
 
     electronProcess.on('close', (code) => {
@@ -31,6 +43,7 @@ function startElectron() {
 
     electronProcess.on('error', (err) => {
       console.error('Erro ao iniciar Electron:', err);
+      console.error('💡 Dica: Certifique-se de que o Electron está instalado: pnpm install');
     });
   }, 500);
 }
@@ -94,20 +107,29 @@ watcher.on('error', (error) => {
 });
 
 // Tratar encerramento
-process.on('SIGINT', () => {
+function cleanup() {
   console.log('\n👋 Encerrando...');
   watcher.close();
   if (electronProcess) {
-    electronProcess.kill('SIGTERM');
+    if (process.platform === 'win32') {
+      electronProcess.kill();
+    } else {
+      electronProcess.kill('SIGTERM');
+    }
   }
   process.exit(0);
-});
+}
 
-process.on('SIGTERM', () => {
-  watcher.close();
-  if (electronProcess) {
-    electronProcess.kill('SIGTERM');
-  }
-  process.exit(0);
-});
+process.on('SIGINT', cleanup);
+process.on('SIGTERM', cleanup);
+
+// No Windows, também tratar Ctrl+C via eventos diferentes
+if (process.platform === 'win32') {
+  process.on('SIGBREAK', cleanup);
+  process.on('exit', () => {
+    if (electronProcess) {
+      electronProcess.kill();
+    }
+  });
+}
 
