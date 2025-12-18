@@ -159,15 +159,23 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
           data[0] === 0x02 &&
           data[data.length - 1] === 0x03
         ) {
-          const peso = processarRespostaToledo(data);
-          if (peso) {
-            console.log('Peso processado do listener direto:', peso);
-            // Enviar peso para a janela principal
-            mainWindow?.webContents.send('peso-balanca', peso);
-            // Se há um callback esperando, chamá-lo
-            if (callbackPesoRecebido) {
-              callbackPesoRecebido(peso);
-              callbackPesoRecebido = null;
+          const pesoBruto = processarRespostaToledo(data);
+          if (pesoBruto) {
+            // Converter peso para quilogramas
+            const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
+            if (pesoEmKg) {
+              console.log(
+                'Peso processado do listener direto:',
+                pesoEmKg,
+                'kg'
+              );
+              // Enviar peso para a janela principal
+              mainWindow?.webContents.send('peso-balanca', pesoEmKg);
+              // Se há um callback esperando, chamá-lo
+              if (callbackPesoRecebido) {
+                callbackPesoRecebido(pesoEmKg);
+                callbackPesoRecebido = null;
+              }
             }
           }
         }
@@ -267,6 +275,52 @@ function enviarComando(comando: string | Buffer): Promise<void> {
   });
 }
 
+// Função para converter peso bruto da balança para quilogramas
+// Entrada: string com dígitos (ex: "00415", "ST,GS, 00415 kg", etc.)
+// Saída: string formatada em kg com 3 casas decimais (ex: "0.415") ou null se inválido
+function converterPesoParaQuilogramas(pesoBruto: string): string | null {
+  if (!pesoBruto || typeof pesoBruto !== 'string') {
+    return null;
+  }
+
+  // Extrair apenas dígitos numéricos (incluindo possível sinal negativo)
+  const matchDigitos = pesoBruto.match(/-?\d+/);
+
+  if (!matchDigitos || matchDigitos[0].length === 0) {
+    console.log('Nenhum dígito numérico encontrado no peso bruto:', pesoBruto);
+    return null;
+  }
+
+  const digitos = matchDigitos[0];
+
+  // Converter para número
+  const valorNumerico = parseInt(digitos, 10);
+
+  // Verificar se é um número válido
+  if (isNaN(valorNumerico)) {
+    console.log('Valor numérico inválido:', digitos);
+    return null;
+  }
+
+  // Verificar se o valor é razoável (entre -999999 e 999999 para evitar valores absurdos)
+  if (Math.abs(valorNumerico) > 999999) {
+    console.log('Valor fora do range esperado:', valorNumerico);
+    return null;
+  }
+
+  // Dividir por 1000 para converter para quilogramas
+  const pesoEmKg = valorNumerico / 1000;
+
+  // Formatar com 3 casas decimais
+  const pesoFormatado = pesoEmKg.toFixed(3);
+
+  console.log(
+    `Conversão: "${pesoBruto}" -> ${digitos} -> ${pesoEmKg} kg -> "${pesoFormatado}" kg`
+  );
+
+  return pesoFormatado;
+}
+
 // Função para processar resposta no formato Toledo
 // Formato: STX (0x02) + peso + ETX (0x03)
 // Exemplo: 02 30 30 34 31 35 03 = STX "00415" ETX
@@ -334,17 +388,22 @@ function lerPeso(
     // Configurar callback para receber peso do listener direto
     callbackPesoRecebido = (peso: string) => {
       if (!pesoResolvido) {
+        // Converter peso para quilogramas
+        const pesoEmKg = converterPesoParaQuilogramas(peso);
+
+        if (pesoEmKg === null) {
+          console.log('Peso inválido recebido via callback, ignorando...');
+          return; // Não resolver, continuar esperando
+        }
+
         pesoResolvido = true;
         dadosRecebidosModoContinuo = true;
         if (timeoutId) clearTimeout(timeoutId);
         if (timeoutModoContinuo) clearTimeout(timeoutModoContinuo);
         callbackPesoRecebido = null;
 
-        // Extrair apenas números do peso
-        const matchPeso = peso.match(/-?\d+\.?\d*/);
-        const pesoFinal = matchPeso ? matchPeso[0] : peso;
-        console.log('Peso recebido via callback direto:', pesoFinal);
-        resolve(pesoFinal);
+        console.log('Peso recebido via callback direto:', pesoEmKg, 'kg');
+        resolve(pesoEmKg);
       }
     };
 
@@ -364,36 +423,56 @@ function lerPeso(
         buffer[0] === 0x02 &&
         buffer[buffer.length - 1] === 0x03
       ) {
-        const peso = processarRespostaToledo(buffer);
-        if (peso && peso.length > 0) {
+        const pesoBruto = processarRespostaToledo(buffer);
+        if (pesoBruto && pesoBruto.length > 0) {
+          // Converter peso para quilogramas
+          const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
+
+          if (pesoEmKg === null) {
+            console.log(
+              'Peso inválido recebido em modo contínuo, ignorando...'
+            );
+            return; // Não resolver, continuar esperando
+          }
+
           dadosRecebidosModoContinuo = true;
           pesoResolvido = true;
           if (timeoutModoContinuo) clearTimeout(timeoutModoContinuo);
           if (timeoutId) clearTimeout(timeoutId);
           parser!.removeListener('data', onDataContinuo);
           callbackPesoRecebido = null;
-          console.log('Dados recebidos em modo contínuo:', peso);
-          const matchPeso = peso.match(/-?\d+\.?\d*/);
-          const pesoFinal = matchPeso ? matchPeso[0] : peso;
-          resolve(pesoFinal);
+          console.log('Dados recebidos em modo contínuo:', pesoEmKg, 'kg');
+          resolve(pesoEmKg);
         }
       } else {
         // Formato alternativo
-        const peso =
+        const pesoBruto =
           typeof data === 'string'
             ? data.trim()
             : buffer.toString('utf8').trim();
-        if (peso && peso.length > 0) {
+        if (pesoBruto && pesoBruto.length > 0) {
+          // Converter peso para quilogramas
+          const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
+
+          if (pesoEmKg === null) {
+            console.log(
+              'Peso inválido recebido em modo contínuo (formato alternativo), ignorando...'
+            );
+            return; // Não resolver, continuar esperando
+          }
+
           dadosRecebidosModoContinuo = true;
           pesoResolvido = true;
           if (timeoutModoContinuo) clearTimeout(timeoutModoContinuo);
           if (timeoutId) clearTimeout(timeoutId);
           parser!.removeListener('data', onDataContinuo);
           callbackPesoRecebido = null;
-          console.log('Dados recebidos em modo contínuo:', peso);
-          const matchPeso = peso.match(/-?\d+\.?\d*/);
-          const pesoFinal = matchPeso ? matchPeso[0] : peso;
-          resolve(pesoFinal);
+          console.log(
+            'Dados recebidos em modo contínuo (formato alternativo):',
+            pesoEmKg,
+            'kg'
+          );
+          resolve(pesoEmKg);
         }
       }
     };
@@ -520,6 +599,14 @@ function lerPeso(
         return;
       }
 
+      // Converter peso para quilogramas
+      const pesoEmKg = converterPesoParaQuilogramas(respostaProcessada);
+
+      if (pesoEmKg === null) {
+        console.log('Peso inválido recebido do parser, ignorando...');
+        return; // Não resolver, continuar esperando
+      }
+
       dadosRecebidos = true;
       pesoResolvido = true;
       if (timeoutId) clearTimeout(timeoutId);
@@ -528,14 +615,8 @@ function lerPeso(
       parser!.removeListener('data', onDataContinuo);
       callbackPesoRecebido = null;
 
-      // Tentar extrair apenas o peso numérico se possível
-      // Formato Toledo: STX (0x02) + peso + ETX (0x03)
-      // Exemplo: 02 30 30 34 31 35 03 = "00415"
-      const matchPeso = respostaProcessada.match(/-?\d+\.?\d*/);
-      const pesoFinal = matchPeso ? matchPeso[0] : respostaProcessada;
-
-      console.log('Peso extraído:', pesoFinal);
-      resolve(pesoFinal);
+      console.log('Peso extraído e convertido:', pesoEmKg, 'kg');
+      resolve(pesoEmKg);
     };
 
     parser.once('data', onData);
