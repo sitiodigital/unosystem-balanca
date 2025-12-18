@@ -77,6 +77,13 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
       parity: config.parity,
       stopBits: config.stopBits,
       autoOpen: false,
+      // Configurações de fluxo de controle - algumas balanças precisam disso
+      rtscts: false, // RTS/CTS hardware flow control
+      xon: false, // XON/XOFF software flow control
+      xoff: false,
+      xany: false,
+      // Configurações adicionais
+      highWaterMark: 64 * 1024, // Buffer size
     });
 
     serialPort.on('error', (err) => {
@@ -91,19 +98,57 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
       }
 
       console.log('Porta serial aberta com sucesso');
+      console.log('Estado da porta:', {
+        isOpen: serialPort!.isOpen,
+        baudRate: serialPort!.baudRate,
+        path: serialPort!.path,
+      });
+
+      // Configurar sinais de controle (algumas balanças precisam disso)
+      try {
+        serialPort!.set({ rts: true, dtr: true });
+        console.log('Sinais RTS e DTR configurados');
+      } catch (err) {
+        console.log('Aviso: Não foi possível configurar RTS/DTR:', err);
+      }
 
       // Criar um Transform stream para capturar dados brutos antes do parser
       const dataCapture = new Transform({
         transform(chunk: Buffer, encoding: string, callback: () => void) {
+          const hex = chunk.toString('hex');
+          const text = chunk.toString('utf8', 0, Math.min(chunk.length, 100)); // Limitar tamanho do log
           console.log(
-            'Dados brutos capturados:',
-            chunk.toString('hex'),
-            '| Texto:',
-            chunk.toString()
+            '=== DADOS BRUTOS CAPTURADOS ===',
+            '\nHex:',
+            hex,
+            '\nTexto:',
+            text,
+            '\nTamanho:',
+            chunk.length,
+            'bytes',
+            '\n=============================='
           );
           this.push(chunk);
           callback();
         },
+      });
+
+      // Adicionar listener direto no serialPort para capturar TUDO antes do pipe
+      // Isso é importante porque o pipe pode consumir os dados
+      serialPort!.on('data', (data: Buffer) => {
+        const hex = data.toString('hex');
+        const text = data.toString('utf8', 0, Math.min(data.length, 100));
+        console.log(
+          '=== DADOS RECEBIDOS DIRETAMENTE DA PORTA ===',
+          '\nHex:',
+          hex,
+          '\nTexto:',
+          text,
+          '\nTamanho:',
+          data.length,
+          'bytes',
+          '\n=========================================='
+        );
       });
 
       // Toledo usa CR (\r) como delimitador no protocolo TOLEDO Continuous
@@ -170,11 +215,19 @@ function enviarComando(comando: string | Buffer): Promise<void> {
     const buffer = Buffer.isBuffer(comando)
       ? comando
       : Buffer.from(comando, 'utf8');
+    const hex = buffer.toString('hex');
+    const text = buffer.toString('utf8', 0, Math.min(buffer.length, 50));
+
     console.log(
-      'Enviando comando para balança:',
-      buffer.toString('hex'),
-      '| Texto:',
-      buffer.toString()
+      '=== ENVIANDO COMANDO ===',
+      '\nHex:',
+      hex,
+      '\nTexto:',
+      text.replace(/\r/g, '\\r').replace(/\n/g, '\\n'),
+      '\nTamanho:',
+      buffer.length,
+      'bytes',
+      '\n======================'
     );
 
     serialPort.write(buffer, (err) => {
@@ -182,8 +235,11 @@ function enviarComando(comando: string | Buffer): Promise<void> {
         console.error('Erro ao enviar comando:', err);
         reject(err);
       } else {
-        console.log('Comando enviado com sucesso');
-        resolve();
+        console.log('Comando enviado com sucesso, aguardando resposta...');
+        // Aguardar um pouco para garantir que o comando foi enviado
+        setTimeout(() => {
+          resolve();
+        }, 50);
       }
     });
   });
