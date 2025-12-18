@@ -317,14 +317,27 @@ function lerPeso(
 
     let dadosRecebidosModoContinuo = false;
     let pesoResolvido = false;
+    let timeoutId: NodeJS.Timeout | null = null;
+    let timeoutModoContinuo: NodeJS.Timeout | null = null;
+
+    // Primeiro, tentar ler dados sem enviar comandos (modo contínuo)
+    // Algumas balanças Toledo enviam dados automaticamente
+    console.log('Tentando ler dados em modo contínuo (sem comandos)...');
+    timeoutModoContinuo = setTimeout(() => {
+      if (!dadosRecebidosModoContinuo) {
+        console.log(
+          'Nenhum dado recebido em modo contínuo, tentando comandos...'
+        );
+      }
+    }, 2000);
 
     // Configurar callback para receber peso do listener direto
     callbackPesoRecebido = (peso: string) => {
       if (!pesoResolvido) {
         pesoResolvido = true;
         dadosRecebidosModoContinuo = true;
-        clearTimeout(timeoutId);
-        clearTimeout(timeoutModoContinuo);
+        if (timeoutId) clearTimeout(timeoutId);
+        if (timeoutModoContinuo) clearTimeout(timeoutModoContinuo);
         callbackPesoRecebido = null;
 
         // Extrair apenas números do peso
@@ -334,17 +347,6 @@ function lerPeso(
         resolve(pesoFinal);
       }
     };
-
-    // Primeiro, tentar ler dados sem enviar comandos (modo contínuo)
-    // Algumas balanças Toledo enviam dados automaticamente
-    console.log('Tentando ler dados em modo contínuo (sem comandos)...');
-    const timeoutModoContinuo = setTimeout(() => {
-      if (!dadosRecebidosModoContinuo) {
-        console.log(
-          'Nenhum dado recebido em modo contínuo, tentando comandos...'
-        );
-      }
-    }, 2000);
 
     const onDataContinuo = (data: string | Buffer) => {
       if (pesoResolvido) return;
@@ -366,8 +368,8 @@ function lerPeso(
         if (peso && peso.length > 0) {
           dadosRecebidosModoContinuo = true;
           pesoResolvido = true;
-          clearTimeout(timeoutModoContinuo);
-          clearTimeout(timeoutId);
+          if (timeoutModoContinuo) clearTimeout(timeoutModoContinuo);
+          if (timeoutId) clearTimeout(timeoutId);
           parser!.removeListener('data', onDataContinuo);
           callbackPesoRecebido = null;
           console.log('Dados recebidos em modo contínuo:', peso);
@@ -384,8 +386,8 @@ function lerPeso(
         if (peso && peso.length > 0) {
           dadosRecebidosModoContinuo = true;
           pesoResolvido = true;
-          clearTimeout(timeoutModoContinuo);
-          clearTimeout(timeoutId);
+          if (timeoutModoContinuo) clearTimeout(timeoutModoContinuo);
+          if (timeoutId) clearTimeout(timeoutId);
           parser!.removeListener('data', onDataContinuo);
           callbackPesoRecebido = null;
           console.log('Dados recebidos em modo contínuo:', peso);
@@ -447,7 +449,7 @@ function lerPeso(
     }
 
     let dadosRecebidos = false;
-    const timeoutId = setTimeout(() => {
+    timeoutId = setTimeout(() => {
       // Limpar callback se timeout ocorrer
       callbackPesoRecebido = null;
 
@@ -520,8 +522,8 @@ function lerPeso(
 
       dadosRecebidos = true;
       pesoResolvido = true;
-      clearTimeout(timeoutId);
-      clearTimeout(timeoutModoContinuo);
+      if (timeoutId) clearTimeout(timeoutId);
+      if (timeoutModoContinuo) clearTimeout(timeoutModoContinuo);
       parser!.removeListener('data', onData);
       parser!.removeListener('data', onDataContinuo);
       callbackPesoRecebido = null;
