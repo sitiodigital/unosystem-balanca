@@ -10,7 +10,8 @@
     "build:win": "pnpm build && node scripts/build-win.js",
     "build:win:local": "pnpm build && electron-builder --win --x64",
     "fix:electron": "node scripts/fix-electron.js",
-    "fix:electron:win": "powershell -ExecutionPolicy Bypass -File scripts/fix-electron.ps1"
+    "fix:electron:win": "powershell -ExecutionPolicy Bypass -File scripts/fix-electron.ps1",
+    "install:electron": "node scripts/force-install-electron.js"
   },
   "keywords": [],
   "author": "",

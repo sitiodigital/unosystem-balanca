@@ -37,7 +37,18 @@ Write-Host "   Aguarde enquanto o Electron baixa os binarios..." -ForegroundColo
 pnpm install
 
 Write-Host ""
-Write-Host "Passo 5: Verificando instalacao do Electron..." -ForegroundColor Yellow
+Write-Host "Passo 5: Forcando instalacao dos binarios do Electron..." -ForegroundColor Yellow
+$electronInstallPath = "node_modules\.pnpm\electron@39.2.7\node_modules\electron\install.js"
+if (Test-Path $electronInstallPath) {
+    Write-Host "   Executando script de instalacao do Electron..." -ForegroundColor Gray
+    node $electronInstallPath
+    Write-Host "   Binarios instalados" -ForegroundColor Green
+} else {
+    Write-Host "   Script de instalacao nao encontrado, pulando..." -ForegroundColor Yellow
+}
+
+Write-Host ""
+Write-Host "Passo 6: Verificando instalacao do Electron..." -ForegroundColor Yellow
 $electronVersion = pnpm exec electron --version 2>&1
 if ($LASTEXITCODE -eq 0) {
     Write-Host "Electron instalado corretamente! Versao: $electronVersion" -ForegroundColor Green
@@ -46,7 +57,10 @@ if ($LASTEXITCODE -eq 0) {
 } else {
     Write-Host "Electron ainda nao esta funcionando" -ForegroundColor Red
     Write-Host ""
-    Write-Host "Tente executar manualmente:" -ForegroundColor Yellow
+    Write-Host "Tente executar:" -ForegroundColor Yellow
+    Write-Host "   pnpm run install:electron" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "Ou manualmente:" -ForegroundColor Yellow
     Write-Host "   pnpm remove electron" -ForegroundColor Gray
     Write-Host "   pnpm add -D electron@^39.2.7 --force" -ForegroundColor Gray
     exit 1
