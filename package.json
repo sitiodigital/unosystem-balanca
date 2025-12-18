@@ -54,7 +54,6 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
     },
-    "electronRebuild": false,
     "nodeGypRebuild": false,
     "npmRebuild": false,
     "buildDependenciesFromSource": false

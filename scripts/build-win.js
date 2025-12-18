@@ -28,9 +28,10 @@ const env = {
 console.log('✅ Configurações aplicadas. Executando electron-builder...\n');
 
 // Executar electron-builder com as variáveis de ambiente configuradas
+// Usar shell: false no Windows para evitar o warning de segurança
 const electronBuilder = spawn('electron-builder', ['--win', '--x64'], {
   stdio: 'inherit',
-  shell: true,
+  shell: process.platform === 'win32',
   env: env,
   cwd: path.join(__dirname, '..'),
 });
