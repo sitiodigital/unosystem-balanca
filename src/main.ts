@@ -8,6 +8,8 @@ let mainWindow: BrowserWindow | null = null;
 let webViewWindow: BrowserWindow | null = null;
 let serialPort: SerialPort | null = null;
 let parser: ReadlineParser | null = null;
+// Callback para processar peso quando recebido diretamente
+let callbackPesoRecebido: ((peso: string) => void) | null = null;
 
 interface SerialConfig {
   port: string;
@@ -135,6 +137,7 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
 
       // Adicionar listener direto no serialPort para capturar TUDO antes do pipe
       // Isso é importante porque o pipe pode consumir os dados
+      // Toledo responde no formato: STX (0x02) + dados + ETX (0x03)
       serialPort!.on('data', (data: Buffer) => {
         const hex = data.toString('hex');
         const text = data.toString('utf8', 0, Math.min(data.length, 100));
@@ -149,14 +152,33 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
           'bytes',
           '\n=========================================='
         );
+
+        // Processar resposta Toledo imediatamente se estiver no formato STX...ETX
+        if (
+          data.length >= 3 &&
+          data[0] === 0x02 &&
+          data[data.length - 1] === 0x03
+        ) {
+          const peso = processarRespostaToledo(data);
+          if (peso) {
+            console.log('Peso processado do listener direto:', peso);
+            // Enviar peso para a janela principal
+            mainWindow?.webContents.send('peso-balanca', peso);
+            // Se há um callback esperando, chamá-lo
+            if (callbackPesoRecebido) {
+              callbackPesoRecebido(peso);
+              callbackPesoRecebido = null;
+            }
+          }
+        }
       });
 
-      // Toledo usa CR (\r) como delimitador no protocolo TOLEDO Continuous
-      // Formato: STX ... dados ... CR CHK
-      // Capturar dados brutos antes de passar para o parser
+      // Toledo pode usar ETX (0x03) como delimitador no formato STX...ETX
+      // Ou CR (\r) no protocolo TOLEDO Continuous
+      // Vamos usar ETX como delimitador principal
       const newParser = serialPort!
         .pipe(dataCapture)
-        .pipe(new ReadlineParser({ delimiter: '\r' }));
+        .pipe(new ReadlineParser({ delimiter: Buffer.from([0x03]) })); // ETX como delimitador
       parser = newParser;
 
       newParser.on('data', (data: string) => {
@@ -246,15 +268,37 @@ function enviarComando(comando: string | Buffer): Promise<void> {
 }
 
 // Função para processar resposta no formato Toledo
-// Formato: STX SWA SWB SWC MSD ... LSD CR CHK
-function processarRespostaToledo(data: string): string {
-  // Remover caracteres de controle (STX = 0x02, ETX = 0x03)
-  let resposta = data.replace(/[\x02\x03]/g, '').trim();
+// Formato: STX (0x02) + peso + ETX (0x03)
+// Exemplo: 02 30 30 34 31 35 03 = STX "00415" ETX
+function processarRespostaToledo(data: string | Buffer): string {
+  let buffer: Buffer;
 
-  // Se a resposta contém dados estruturados, tentar extrair o peso
-  // O formato Toledo geralmente tem o peso nos dígitos MSD-LSD
-  // Por enquanto, retornamos a resposta completa para análise
-  console.log('Resposta processada Toledo:', resposta);
+  // Converter string para Buffer se necessário
+  if (typeof data === 'string') {
+    buffer = Buffer.from(data, 'utf8');
+  } else {
+    buffer = data;
+  }
+
+  // Verificar se começa com STX (0x02) e termina com ETX (0x03)
+  if (
+    buffer.length >= 3 &&
+    buffer[0] === 0x02 &&
+    buffer[buffer.length - 1] === 0x03
+  ) {
+    // Extrair apenas os dados entre STX e ETX
+    const dadosPeso = buffer.slice(1, -1);
+    const peso = dadosPeso.toString('utf8').trim();
+    console.log('Resposta Toledo processada - Peso extraído:', peso);
+    return peso;
+  }
+
+  // Se não estiver no formato esperado, tentar remover caracteres de controle
+  let resposta = buffer
+    .toString('utf8')
+    .replace(/[\x02\x03]/g, '')
+    .trim();
+  console.log('Resposta processada Toledo (formato alternativo):', resposta);
 
   return resposta;
 }
@@ -271,10 +315,29 @@ function lerPeso(
 
     console.log('Aguardando dados da balança (timeout:', timeout, 'ms)...');
 
+    let dadosRecebidosModoContinuo = false;
+    let pesoResolvido = false;
+
+    // Configurar callback para receber peso do listener direto
+    callbackPesoRecebido = (peso: string) => {
+      if (!pesoResolvido) {
+        pesoResolvido = true;
+        dadosRecebidosModoContinuo = true;
+        clearTimeout(timeoutId);
+        clearTimeout(timeoutModoContinuo);
+        callbackPesoRecebido = null;
+
+        // Extrair apenas números do peso
+        const matchPeso = peso.match(/-?\d+\.?\d*/);
+        const pesoFinal = matchPeso ? matchPeso[0] : peso;
+        console.log('Peso recebido via callback direto:', pesoFinal);
+        resolve(pesoFinal);
+      }
+    };
+
     // Primeiro, tentar ler dados sem enviar comandos (modo contínuo)
     // Algumas balanças Toledo enviam dados automaticamente
     console.log('Tentando ler dados em modo contínuo (sem comandos)...');
-    let dadosRecebidosModoContinuo = false;
     const timeoutModoContinuo = setTimeout(() => {
       if (!dadosRecebidosModoContinuo) {
         console.log(
@@ -283,16 +346,53 @@ function lerPeso(
       }
     }, 2000);
 
-    const onDataContinuo = (data: string) => {
-      const peso = data.trim();
-      if (peso && peso.length > 0) {
-        dadosRecebidosModoContinuo = true;
-        clearTimeout(timeoutModoContinuo);
-        parser!.removeListener('data', onDataContinuo);
-        console.log('Dados recebidos em modo contínuo:', peso);
-        const matchPeso = peso.match(/-?\d+\.?\d*/);
-        const pesoFinal = matchPeso ? matchPeso[0] : peso;
-        resolve(pesoFinal);
+    const onDataContinuo = (data: string | Buffer) => {
+      if (pesoResolvido) return;
+
+      let buffer: Buffer;
+      if (typeof data === 'string') {
+        buffer = Buffer.from(data, 'utf8');
+      } else {
+        buffer = data;
+      }
+
+      // Verificar se está no formato STX...ETX
+      if (
+        buffer.length >= 3 &&
+        buffer[0] === 0x02 &&
+        buffer[buffer.length - 1] === 0x03
+      ) {
+        const peso = processarRespostaToledo(buffer);
+        if (peso && peso.length > 0) {
+          dadosRecebidosModoContinuo = true;
+          pesoResolvido = true;
+          clearTimeout(timeoutModoContinuo);
+          clearTimeout(timeoutId);
+          parser!.removeListener('data', onDataContinuo);
+          callbackPesoRecebido = null;
+          console.log('Dados recebidos em modo contínuo:', peso);
+          const matchPeso = peso.match(/-?\d+\.?\d*/);
+          const pesoFinal = matchPeso ? matchPeso[0] : peso;
+          resolve(pesoFinal);
+        }
+      } else {
+        // Formato alternativo
+        const peso =
+          typeof data === 'string'
+            ? data.trim()
+            : buffer.toString('utf8').trim();
+        if (peso && peso.length > 0) {
+          dadosRecebidosModoContinuo = true;
+          pesoResolvido = true;
+          clearTimeout(timeoutModoContinuo);
+          clearTimeout(timeoutId);
+          parser!.removeListener('data', onDataContinuo);
+          callbackPesoRecebido = null;
+          console.log('Dados recebidos em modo contínuo:', peso);
+          const matchPeso = peso.match(/-?\d+\.?\d*/);
+          const pesoFinal = matchPeso ? matchPeso[0] : peso;
+          resolve(pesoFinal);
+        }
       }
     };
 
@@ -303,7 +403,7 @@ function lerPeso(
       // Aguardar um pouco antes de enviar comandos
       await new Promise((r) => setTimeout(r, 2500));
 
-      if (dadosRecebidosModoContinuo) {
+      if (dadosRecebidosModoContinuo || pesoResolvido) {
         return; // Já recebeu dados, não precisa enviar comandos
       }
 
@@ -348,7 +448,10 @@ function lerPeso(
 
     let dadosRecebidos = false;
     const timeoutId = setTimeout(() => {
-      if (!dadosRecebidos && !dadosRecebidosModoContinuo) {
+      // Limpar callback se timeout ocorrer
+      callbackPesoRecebido = null;
+
+      if (!dadosRecebidos && !dadosRecebidosModoContinuo && !pesoResolvido) {
         console.log('Timeout: Nenhum dado recebido da balança');
         console.log('');
         console.log('=== DIAGNÓSTICO ===');
@@ -389,20 +492,25 @@ function lerPeso(
     }, timeout);
 
     // Listener temporário para capturar dados do parser (após comandos)
-    const onData = (data: string) => {
+    const onData = (data: string | Buffer) => {
       // Se já recebeu dados em modo contínuo, ignorar
       if (dadosRecebidosModoContinuo) {
         return;
       }
 
       console.log('Dado recebido no lerPeso (raw):', data);
-      console.log(
-        'Dado recebido (hex):',
-        Buffer.from(data, 'utf8').toString('hex')
-      );
+
+      let buffer: Buffer;
+      if (typeof data === 'string') {
+        buffer = Buffer.from(data, 'utf8');
+      } else {
+        buffer = data;
+      }
+
+      console.log('Dado recebido (hex):', buffer.toString('hex'));
 
       // Processar resposta Toledo
-      const respostaProcessada = processarRespostaToledo(data);
+      const respostaProcessada = processarRespostaToledo(buffer);
 
       // Ignorar dados vazios ou muito pequenos (provavelmente ruído)
       if (!respostaProcessada || respostaProcessada.length === 0) {
@@ -411,14 +519,16 @@ function lerPeso(
       }
 
       dadosRecebidos = true;
+      pesoResolvido = true;
       clearTimeout(timeoutId);
       clearTimeout(timeoutModoContinuo);
       parser!.removeListener('data', onData);
       parser!.removeListener('data', onDataContinuo);
+      callbackPesoRecebido = null;
 
       // Tentar extrair apenas o peso numérico se possível
-      // Formato Toledo pode ter: STX SWA SWB SWC MSD...LSD CR CHK
-      // Ou formato [STX][PPPPP][ETX] onde PPPPP é o peso
+      // Formato Toledo: STX (0x02) + peso + ETX (0x03)
+      // Exemplo: 02 30 30 34 31 35 03 = "00415"
       const matchPeso = respostaProcessada.match(/-?\d+\.?\d*/);
       const pesoFinal = matchPeso ? matchPeso[0] : respostaProcessada;
 
