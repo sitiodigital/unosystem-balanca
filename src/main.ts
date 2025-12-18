@@ -67,6 +67,8 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
   return new Promise((resolve, reject) => {
     fecharConexaoSerial();
 
+    console.log('Abrindo conexão serial com configuração:', config);
+
     serialPort = new SerialPort({
       path: config.port,
       baudRate: config.baudRate,
@@ -76,17 +78,36 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
       autoOpen: false,
     });
 
+    // Listener para dados brutos (para debug)
+    serialPort.on('data', (data: Buffer) => {
+      console.log(
+        'Dados brutos recebidos:',
+        data.toString('hex'),
+        '| Texto:',
+        data.toString()
+      );
+    });
+
+    serialPort.on('error', (err) => {
+      console.error('Erro na porta serial:', err);
+    });
+
     serialPort.open((err) => {
       if (err) {
+        console.error('Erro ao abrir porta serial:', err);
         reject(err);
         return;
       }
 
+      console.log('Porta serial aberta com sucesso');
+
+      // Tentar diferentes delimitadores comuns em balanças
+      // Primeiro tenta \r\n, depois \n, depois \r
       parser = serialPort!.pipe(new ReadlineParser({ delimiter: '\r\n' }));
 
       parser.on('data', (data: string) => {
         const peso = data.trim();
-        console.log('Peso recebido:', peso);
+        console.log('Peso recebido (parser):', peso);
 
         // Enviar peso para a janela principal
         mainWindow?.webContents.send('peso-balanca', peso);
@@ -122,26 +143,101 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
         }
       });
 
-      resolve();
+      // Pequeno delay para garantir que a conexão está estável
+      setTimeout(() => {
+        resolve();
+      }, 100);
     });
   });
 }
 
-function lerPeso(timeout: number = 3000): Promise<string> {
+function enviarComando(comando: string | Buffer): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (!parser) {
+    if (!serialPort || !serialPort.isOpen) {
       reject(new Error('Conexão serial não está aberta'));
       return;
     }
 
+    const buffer = Buffer.isBuffer(comando)
+      ? comando
+      : Buffer.from(comando, 'utf8');
+    console.log(
+      'Enviando comando para balança:',
+      buffer.toString('hex'),
+      '| Texto:',
+      buffer.toString()
+    );
+
+    serialPort.write(buffer, (err) => {
+      if (err) {
+        console.error('Erro ao enviar comando:', err);
+        reject(err);
+      } else {
+        console.log('Comando enviado com sucesso');
+        resolve();
+      }
+    });
+  });
+}
+
+function lerPeso(
+  timeout: number = 5000,
+  tentarComandos: boolean = true
+): Promise<string> {
+  return new Promise(async (resolve, reject) => {
+    if (!parser || !serialPort || !serialPort.isOpen) {
+      reject(new Error('Conexão serial não está aberta'));
+      return;
+    }
+
+    console.log('Aguardando dados da balança (timeout:', timeout, 'ms)...');
+
+    // Se tentarComandos for true, tentar enviar alguns comandos comuns
+    if (tentarComandos) {
+      try {
+        // Comandos comuns em balanças (algumas balanças respondem a estes)
+        // P = Print/Peço, ? = Status, ENTER = Solicitar leitura
+        const comandos = ['P\r\n', 'P\r', 'P\n', '\r\n', '\r', '\n', '?\r\n'];
+        for (const cmd of comandos) {
+          try {
+            await enviarComando(cmd);
+            await new Promise((r) => setTimeout(r, 150)); // Pequeno delay entre comandos
+          } catch (err) {
+            // Ignorar erros ao enviar comandos
+          }
+        }
+        console.log('Comandos de teste enviados, aguardando resposta...');
+      } catch (err) {
+        console.log('Erro ao enviar comandos (continuando mesmo assim):', err);
+      }
+    }
+
+    let dadosRecebidos = false;
     const timeoutId = setTimeout(() => {
-      reject(new Error('Timeout: Nenhum dado recebido da balança'));
+      if (!dadosRecebidos) {
+        console.log('Timeout: Nenhum dado recebido da balança');
+        reject(
+          new Error(
+            'Timeout: Nenhum dado recebido da balança. Verifique se a balança está ligada e conectada corretamente.'
+          )
+        );
+      }
     }, timeout);
 
+    // Listener temporário para capturar dados do parser
     const onData = (data: string) => {
+      const peso = data.trim();
+      console.log('Dado recebido no lerPeso:', peso);
+
+      // Ignorar dados vazios ou muito pequenos (provavelmente ruído)
+      if (!peso || peso.length === 0) {
+        return;
+      }
+
+      dadosRecebidos = true;
       clearTimeout(timeoutId);
       parser!.removeListener('data', onData);
-      resolve(data.trim());
+      resolve(peso);
     };
 
     parser.once('data', onData);
@@ -164,11 +260,29 @@ ipcMain.handle('listar-portas', async () => {
 
 ipcMain.handle('testar-conexao', async (_, config: SerialConfig) => {
   try {
+    console.log('Iniciando teste de conexão...');
     await abrirConexaoSerial(config);
-    const peso = await lerPeso(3000);
+
+    // Aguardar um pouco mais para garantir que a conexão está estável
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    console.log('Tentando ler peso da balança...');
+    // Tentar ler peso com comandos primeiro, depois sem comandos
+    let peso: string;
+    try {
+      peso = await lerPeso(5000, true); // Tenta com comandos primeiro
+    } catch (err) {
+      console.log('Primeira tentativa falhou, tentando sem comandos...');
+      // Se falhar, tentar novamente sem enviar comandos (algumas balanças enviam automaticamente)
+      peso = await lerPeso(5000, false);
+    }
+
+    console.log('Peso lido com sucesso:', peso);
+
     fecharConexaoSerial();
     return { sucesso: true, peso };
   } catch (error: any) {
+    console.error('Erro ao testar conexão:', error);
     fecharConexaoSerial();
     return {
       sucesso: false,
