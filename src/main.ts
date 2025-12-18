@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain } from 'electron';
 import path from 'path';
 import { SerialPort } from 'serialport';
 import { ReadlineParser } from '@serialport/parser-readline';
+import { Transform } from 'stream';
 
 let mainWindow: BrowserWindow | null = null;
 let webViewWindow: BrowserWindow | null = null;
@@ -78,16 +79,6 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
       autoOpen: false,
     });
 
-    // Listener para dados brutos (para debug)
-    serialPort.on('data', (data: Buffer) => {
-      console.log(
-        'Dados brutos recebidos:',
-        data.toString('hex'),
-        '| Texto:',
-        data.toString()
-      );
-    });
-
     serialPort.on('error', (err) => {
       console.error('Erro na porta serial:', err);
     });
@@ -101,11 +92,29 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
 
       console.log('Porta serial aberta com sucesso');
 
+      // Criar um Transform stream para capturar dados brutos antes do parser
+      const dataCapture = new Transform({
+        transform(chunk: Buffer, encoding: string, callback: () => void) {
+          console.log(
+            'Dados brutos capturados:',
+            chunk.toString('hex'),
+            '| Texto:',
+            chunk.toString()
+          );
+          this.push(chunk);
+          callback();
+        },
+      });
+
       // Toledo usa CR (\r) como delimitador no protocolo TOLEDO Continuous
       // Formato: STX ... dados ... CR CHK
-      parser = serialPort!.pipe(new ReadlineParser({ delimiter: '\r' }));
+      // Capturar dados brutos antes de passar para o parser
+      const newParser = serialPort!
+        .pipe(dataCapture)
+        .pipe(new ReadlineParser({ delimiter: '\r' }));
+      parser = newParser;
 
-      parser.on('data', (data: string) => {
+      newParser.on('data', (data: string) => {
         const peso = data.trim();
         console.log('Peso recebido (parser):', peso);
 
@@ -195,7 +204,7 @@ function processarRespostaToledo(data: string): string {
 }
 
 function lerPeso(
-  timeout: number = 5000,
+  timeout: number = 8000,
   tentarComandos: boolean = true
 ): Promise<string> {
   return new Promise(async (resolve, reject) => {
@@ -206,18 +215,40 @@ function lerPeso(
 
     console.log('Aguardando dados da balança (timeout:', timeout, 'ms)...');
 
-    // Se tentarComandos for true, enviar comando Toledo específico
+    // Se tentarComandos for true, tentar diferentes formatos de comando Toledo
     if (tentarComandos) {
       try {
-        // Comando Toledo: "P" solicita o peso atual
-        // Toledo geralmente usa \r\n como terminação de comando
-        console.log('Enviando comando Toledo "P" para solicitar peso...');
-        await enviarComando('P\r\n');
-        // Aguardar um pouco para a balança processar e responder
-        await new Promise((r) => setTimeout(r, 200));
+        // Tentar diferentes formatos de comando Toledo
+        // Algumas balanças Toledo podem usar formatos diferentes
+        const comandos = [
+          'P\r\n', // Comando padrão com CR+LF
+          'P\r', // Comando com apenas CR
+          'P\n', // Comando com apenas LF
+          'P', // Comando sem terminação
+          '\r\n', // Apenas ENTER
+          '\r', // Apenas CR
+        ];
+
+        console.log('Tentando diferentes formatos de comando Toledo...');
+        for (let i = 0; i < comandos.length; i++) {
+          const cmd = comandos[i];
+          console.log(
+            `Tentativa ${i + 1}/${comandos.length}: Enviando comando "${cmd
+              .replace(/\r/g, '\\r')
+              .replace(/\n/g, '\\n')}"`
+          );
+          try {
+            await enviarComando(cmd);
+            // Aguardar resposta antes de tentar próximo comando
+            await new Promise((r) => setTimeout(r, 500));
+          } catch (err) {
+            console.log(`Erro ao enviar comando ${i + 1}:`, err);
+          }
+        }
+        console.log('Todos os comandos enviados, aguardando resposta...');
       } catch (err) {
         console.log(
-          'Erro ao enviar comando Toledo (continuando mesmo assim):',
+          'Erro ao enviar comandos Toledo (continuando mesmo assim):',
           err
         );
       }
@@ -227,6 +258,14 @@ function lerPeso(
     const timeoutId = setTimeout(() => {
       if (!dadosRecebidos) {
         console.log('Timeout: Nenhum dado recebido da balança');
+        console.log('Dica: Verifique se:');
+        console.log('  1. A balança está ligada');
+        console.log('  2. O cabo está conectado corretamente');
+        console.log('  3. A porta COM está correta');
+        console.log('  4. A balança está configurada para comunicação serial');
+        console.log(
+          '  5. Os parâmetros de comunicação estão corretos na balança'
+        );
         reject(
           new Error(
             'Timeout: Nenhum dado recebido da balança. Verifique se a balança está ligada e conectada corretamente.'
@@ -294,7 +333,8 @@ ipcMain.handle('testar-conexao', async (_, config: SerialConfig) => {
 
     console.log('Tentando ler peso da balança Toledo...');
     // Toledo requer comando "P" para enviar dados
-    const peso = await lerPeso(5000, true);
+    // Aumentado timeout para 8 segundos para dar tempo da balança responder
+    const peso = await lerPeso(8000, true);
 
     console.log('Peso lido com sucesso:', peso);
 
