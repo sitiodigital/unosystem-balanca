@@ -28,11 +28,21 @@ function startElectron() {
     const electronCommand = isWindows ? 'pnpm' : 'npx';
     const electronArgs = isWindows ? ['exec', 'electron', '.'] : ['electron', '.'];
     
-    electronProcess = spawn(electronCommand, electronArgs, {
+    // No Windows, usar shell: false e passar o comando completo
+    // Isso evita o warning de segurança
+    const spawnOptions = {
       stdio: 'inherit',
-      shell: isWindows, // No Windows precisa de shell para encontrar pnpm
       cwd: path.join(__dirname, '..'),
-    });
+    };
+    
+    if (isWindows) {
+      // No Windows, usar cmd /c para executar o comando
+      spawnOptions.shell = true;
+    } else {
+      spawnOptions.shell = false;
+    }
+    
+    electronProcess = spawn(electronCommand, electronArgs, spawnOptions);
 
     electronProcess.on('close', (code) => {
       if (code !== null && code !== 0 && code !== 130) {

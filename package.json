@@ -8,7 +8,8 @@
     "build": "tsc && node scripts/copy-assets.js",
     "start": "pnpm build && electron .",
     "build:win": "pnpm build && node scripts/build-win.js",
-    "build:win:local": "pnpm build && electron-builder --win --x64"
+    "build:win:local": "pnpm build && electron-builder --win --x64",
+    "fix:electron": "node scripts/fix-electron.js"
   },
   "keywords": [],
   "author": "",
