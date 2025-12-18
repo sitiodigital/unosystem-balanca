@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Configuração da Balança</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body>
+  <div class="container">
+    <h1>Configuração da Balança</h1>
+
+    <form id="configForm">
+      <div class="form-group">
+        <label for="enderecoSistema">Endereço do Sistema</label>
+        <input type="text" id="enderecoSistema" name="enderecoSistema"
+          placeholder="http://192.168.0.245:65001/uno/admin" required />
+      </div>
+
+      <div class="form-group">
+        <label for="portaSerial">Porta Serial</label>
+        <select id="portaSerial" name="portaSerial" required>
+          <option value="">Carregando portas...</option>
+        </select>
+        <button type="button" id="btnAtualizarPortas" class="btn-secondary">Atualizar Portas</button>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="baudRate">Taxa de Bits (Baud Rate)</label>
+          <select id="baudRate" name="baudRate" required>
+            <option value="1200">1200</option>
+            <option value="2400">2400</option>
+            <option value="4800">4800</option>
+            <option value="9600" selected>9600</option>
+            <option value="19200">19200</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="dataBits">Bits de Dados</label>
+          <select id="dataBits" name="dataBits" required>
+            <option value="7">7</option>
+            <option value="8" selected>8</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="parity">Paridade</label>
+          <select id="parity" name="parity" required>
+            <option value="none" selected>Nenhuma</option>
+            <option value="even">Par</option>
+            <option value="odd">Ímpar</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="stopBits">Bits de Parada</label>
+          <select id="stopBits" name="stopBits" required>
+            <option value="1" selected>1</option>
+            <option value="2">2</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="button-group">
+        <button type="button" id="btnTestar" class="btn-primary">Testar Conexão</button>
+        <button type="submit" id="btnConectar" class="btn-success">Conectar</button>
+      </div>
+    </form>
+
+    <div id="statusMessage" class="status-message"></div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+
+</html>

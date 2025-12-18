@@ -1,0 +1,62 @@
+{
+  "name": "unosystem-balanca",
+  "version": "1.0.0",
+  "description": "Aplicação desktop Electron para configuração e comunicação com balança via porta serial",
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "node scripts/dev.js",
+    "build": "tsc && node scripts/copy-assets.js",
+    "start": "pnpm build && electron .",
+    "build:win": "pnpm build && node scripts/prepare-win-build.js && npm_config_build_from_source=false electron-builder --win --x64",
+    "build:win:local": "pnpm build && electron-builder --win --x64"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.19.0",
+  "dependencies": {
+    "@serialport/parser-readline": "^13.0.0",
+    "serialport": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "chokidar": "^5.0.0",
+    "concurrently": "^9.2.1",
+    "electron": "^39.2.7",
+    "electron-builder": "^26.0.12",
+    "nodemon": "^3.1.11",
+    "typescript": "^5.9.3",
+    "wait-on": "^9.0.3"
+  },
+  "build": {
+    "appId": "com.unosystem.balanca",
+    "productName": "Balança UnoSystem",
+    "directories": {
+      "output": "dist_electron"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "electronRebuild": false,
+    "nodeGypRebuild": false,
+    "npmRebuild": false,
+    "buildDependenciesFromSource": false
+  }
+}
