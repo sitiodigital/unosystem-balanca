@@ -6,10 +6,11 @@
   "scripts": {
     "dev": "node scripts/dev.js",
     "build": "tsc && node scripts/copy-assets.js",
-    "start": "pnpm build && electron .",
+    "start": "pnpm build && pnpm exec electron .",
     "build:win": "pnpm build && node scripts/build-win.js",
     "build:win:local": "pnpm build && electron-builder --win --x64",
-    "fix:electron": "node scripts/fix-electron.js"
+    "fix:electron": "node scripts/fix-electron.js",
+    "fix:electron:win": "powershell -ExecutionPolicy Bypass -File scripts/fix-electron.ps1"
   },
   "keywords": [],
   "author": "",
