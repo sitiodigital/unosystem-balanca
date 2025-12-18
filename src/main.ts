@@ -542,6 +542,14 @@ function lerPeso(
 
         console.log('Tentando diferentes formatos de comando Toledo...');
         for (let i = 0; i < comandos.length; i++) {
+          // Verificar se já recebeu resposta válida antes de continuar
+          if (pesoResolvido || dadosRecebidosModoContinuo) {
+            console.log(
+              `Resposta recebida após comando ${i}, interrompendo tentativas adicionais.`
+            );
+            break;
+          }
+
           const cmd = comandos[i];
           const cmdDesc = Buffer.isBuffer(cmd)
             ? `ENQ (0x05)`
@@ -552,12 +560,30 @@ function lerPeso(
           try {
             await enviarComando(cmd);
             // Aguardar resposta antes de tentar próximo comando
-            await new Promise((r) => setTimeout(r, 600));
+            // Reduzir tempo de espera para resposta mais rápida
+            await new Promise((r) => setTimeout(r, 800));
+
+            // Verificar novamente se recebeu resposta após aguardar
+            if (pesoResolvido || dadosRecebidosModoContinuo) {
+              console.log(
+                `Resposta recebida após comando ${
+                  i + 1
+                }, interrompendo tentativas adicionais.`
+              );
+              break;
+            }
           } catch (err) {
             console.log(`Erro ao enviar comando ${i + 1}:`, err);
           }
         }
-        console.log('Todos os comandos enviados, aguardando resposta...');
+
+        if (pesoResolvido || dadosRecebidosModoContinuo) {
+          console.log(
+            'Resposta recebida com sucesso, não é necessário aguardar mais comandos.'
+          );
+        } else {
+          console.log('Todos os comandos enviados, aguardando resposta...');
+        }
       } catch (err) {
         console.log(
           'Erro ao enviar comandos Toledo (continuando mesmo assim):',
