@@ -210,6 +210,14 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
         // Enviar peso convertido para a janela principal
         mainWindow?.webContents.send('peso-balanca', pesoEmKg);
 
+        // Se há um callback esperando, chamá-lo com o peso convertido
+        // Isso resolve a Promise da função lerPeso
+        if (callbackPesoRecebido) {
+          console.log('Chamando callback com peso convertido:', pesoEmKg);
+          callbackPesoRecebido(pesoEmKg);
+          callbackPesoRecebido = null;
+        }
+
         // Enviar peso para a WebView via JavaScript injetado
         if (webViewWindow && !webViewWindow.isDestroyed()) {
           // Criar um evento customizado na página da WebView
@@ -399,14 +407,27 @@ function lerPeso(
       }
     }, 2000);
 
-    // Configurar callback para receber peso do listener direto
-    callbackPesoRecebido = (peso: string) => {
+    // Configurar callback para receber peso do listener direto ou parser
+    // O peso já vem convertido do parser/listener, então apenas resolve a Promise
+    callbackPesoRecebido = (pesoConvertido: string) => {
       if (!pesoResolvido) {
-        // Converter peso para quilogramas
-        const pesoEmKg = converterPesoParaQuilogramas(peso);
+        // Validar que é um peso válido
+        if (
+          !pesoConvertido ||
+          typeof pesoConvertido !== 'string' ||
+          pesoConvertido.trim().length === 0
+        ) {
+          console.log('Peso vazio recebido via callback, ignorando...');
+          return; // Não resolver, continuar esperando
+        }
 
-        if (pesoEmKg === null) {
-          console.log('Peso inválido recebido via callback, ignorando...');
+        // Verificar se o peso é válido (não é "0.000" a menos que seja realmente zero)
+        const pesoNum = parseFloat(pesoConvertido);
+        if (isNaN(pesoNum)) {
+          console.log(
+            'Peso não numérico recebido via callback:',
+            pesoConvertido
+          );
           return; // Não resolver, continuar esperando
         }
 
@@ -416,8 +437,12 @@ function lerPeso(
         if (timeoutModoContinuo) clearTimeout(timeoutModoContinuo);
         callbackPesoRecebido = null;
 
-        console.log('Peso recebido via callback direto:', pesoEmKg, 'kg');
-        resolve(pesoEmKg);
+        console.log(
+          'Peso recebido via callback - resolvendo Promise com:',
+          pesoConvertido,
+          'kg'
+        );
+        resolve(pesoConvertido);
       }
     };
 
@@ -587,9 +612,10 @@ function lerPeso(
     }, timeout);
 
     // Listener temporário para capturar dados do parser (após comandos)
+    // Este listener só será usado se o callback não processar os dados
     const onData = (data: string | Buffer) => {
-      // Se já recebeu dados em modo contínuo, ignorar
-      if (dadosRecebidosModoContinuo) {
+      // Se já recebeu dados em modo contínuo ou já foi resolvido, ignorar
+      if (dadosRecebidosModoContinuo || pesoResolvido) {
         return;
       }
 
@@ -604,20 +630,17 @@ function lerPeso(
 
       console.log('Dado recebido (hex):', buffer.toString('hex'));
 
-      // Processar resposta Toledo
-      const respostaProcessada = processarRespostaToledo(buffer);
-
-      // Ignorar dados vazios ou muito pequenos (provavelmente ruído)
-      if (!respostaProcessada || respostaProcessada.length === 0) {
-        console.log('Dado vazio ignorado');
-        return;
-      }
+      // Remover caracteres de controle
+      let pesoBruto = buffer
+        .toString('utf8')
+        .replace(/[\x00-\x1F\x7F]/g, '')
+        .trim();
 
       // Converter peso para quilogramas
-      const pesoEmKg = converterPesoParaQuilogramas(respostaProcessada);
+      const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
 
       if (pesoEmKg === null) {
-        console.log('Peso inválido recebido do parser, ignorando...');
+        console.log('Peso inválido recebido do parser no onData, ignorando...');
         return; // Não resolver, continuar esperando
       }
 
@@ -629,7 +652,7 @@ function lerPeso(
       parser!.removeListener('data', onDataContinuo);
       callbackPesoRecebido = null;
 
-      console.log('Peso extraído e convertido:', pesoEmKg, 'kg');
+      console.log('Peso extraído e convertido (onData):', pesoEmKg, 'kg');
       resolve(pesoEmKg);
     };
 
