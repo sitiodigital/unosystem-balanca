@@ -101,9 +101,9 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
 
       console.log('Porta serial aberta com sucesso');
 
-      // Tentar diferentes delimitadores comuns em balanças
-      // Primeiro tenta \r\n, depois \n, depois \r
-      parser = serialPort!.pipe(new ReadlineParser({ delimiter: '\r\n' }));
+      // Toledo usa CR (\r) como delimitador no protocolo TOLEDO Continuous
+      // Formato: STX ... dados ... CR CHK
+      parser = serialPort!.pipe(new ReadlineParser({ delimiter: '\r' }));
 
       parser.on('data', (data: string) => {
         const peso = data.trim();
@@ -180,6 +180,20 @@ function enviarComando(comando: string | Buffer): Promise<void> {
   });
 }
 
+// Função para processar resposta no formato Toledo
+// Formato: STX SWA SWB SWC MSD ... LSD CR CHK
+function processarRespostaToledo(data: string): string {
+  // Remover caracteres de controle (STX = 0x02, ETX = 0x03)
+  let resposta = data.replace(/[\x02\x03]/g, '').trim();
+
+  // Se a resposta contém dados estruturados, tentar extrair o peso
+  // O formato Toledo geralmente tem o peso nos dígitos MSD-LSD
+  // Por enquanto, retornamos a resposta completa para análise
+  console.log('Resposta processada Toledo:', resposta);
+
+  return resposta;
+}
+
 function lerPeso(
   timeout: number = 5000,
   tentarComandos: boolean = true
@@ -192,23 +206,20 @@ function lerPeso(
 
     console.log('Aguardando dados da balança (timeout:', timeout, 'ms)...');
 
-    // Se tentarComandos for true, tentar enviar alguns comandos comuns
+    // Se tentarComandos for true, enviar comando Toledo específico
     if (tentarComandos) {
       try {
-        // Comandos comuns em balanças (algumas balanças respondem a estes)
-        // P = Print/Peço, ? = Status, ENTER = Solicitar leitura
-        const comandos = ['P\r\n', 'P\r', 'P\n', '\r\n', '\r', '\n', '?\r\n'];
-        for (const cmd of comandos) {
-          try {
-            await enviarComando(cmd);
-            await new Promise((r) => setTimeout(r, 150)); // Pequeno delay entre comandos
-          } catch (err) {
-            // Ignorar erros ao enviar comandos
-          }
-        }
-        console.log('Comandos de teste enviados, aguardando resposta...');
+        // Comando Toledo: "P" solicita o peso atual
+        // Toledo geralmente usa \r\n como terminação de comando
+        console.log('Enviando comando Toledo "P" para solicitar peso...');
+        await enviarComando('P\r\n');
+        // Aguardar um pouco para a balança processar e responder
+        await new Promise((r) => setTimeout(r, 200));
       } catch (err) {
-        console.log('Erro ao enviar comandos (continuando mesmo assim):', err);
+        console.log(
+          'Erro ao enviar comando Toledo (continuando mesmo assim):',
+          err
+        );
       }
     }
 
@@ -226,18 +237,33 @@ function lerPeso(
 
     // Listener temporário para capturar dados do parser
     const onData = (data: string) => {
-      const peso = data.trim();
-      console.log('Dado recebido no lerPeso:', peso);
+      console.log('Dado recebido no lerPeso (raw):', data);
+      console.log(
+        'Dado recebido (hex):',
+        Buffer.from(data, 'utf8').toString('hex')
+      );
+
+      // Processar resposta Toledo
+      const respostaProcessada = processarRespostaToledo(data);
 
       // Ignorar dados vazios ou muito pequenos (provavelmente ruído)
-      if (!peso || peso.length === 0) {
+      if (!respostaProcessada || respostaProcessada.length === 0) {
+        console.log('Dado vazio ignorado');
         return;
       }
 
       dadosRecebidos = true;
       clearTimeout(timeoutId);
       parser!.removeListener('data', onData);
-      resolve(peso);
+
+      // Tentar extrair apenas o peso numérico se possível
+      // Formato Toledo pode ter: STX SWA SWB SWC MSD...LSD CR CHK
+      // Vamos tentar extrair números da resposta
+      const matchPeso = respostaProcessada.match(/-?\d+\.?\d*/);
+      const pesoFinal = matchPeso ? matchPeso[0] : respostaProcessada;
+
+      console.log('Peso extraído:', pesoFinal);
+      resolve(pesoFinal);
     };
 
     parser.once('data', onData);
@@ -266,16 +292,9 @@ ipcMain.handle('testar-conexao', async (_, config: SerialConfig) => {
     // Aguardar um pouco mais para garantir que a conexão está estável
     await new Promise((resolve) => setTimeout(resolve, 300));
 
-    console.log('Tentando ler peso da balança...');
-    // Tentar ler peso com comandos primeiro, depois sem comandos
-    let peso: string;
-    try {
-      peso = await lerPeso(5000, true); // Tenta com comandos primeiro
-    } catch (err) {
-      console.log('Primeira tentativa falhou, tentando sem comandos...');
-      // Se falhar, tentar novamente sem enviar comandos (algumas balanças enviam automaticamente)
-      peso = await lerPeso(5000, false);
-    }
+    console.log('Tentando ler peso da balança Toledo...');
+    // Toledo requer comando "P" para enviar dados
+    const peso = await lerPeso(5000, true);
 
     console.log('Peso lido com sucesso:', peso);
 
