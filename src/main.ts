@@ -407,6 +407,10 @@ function lerPeso(
       }
     }, 2000);
 
+    // Variáveis para armazenar referências dos listeners (serão definidas depois)
+    let onDataContinuoRef: ((data: string | Buffer) => void) | null = null;
+    let onDataRef: ((data: string | Buffer) => void) | null = null;
+
     // Configurar callback para receber peso do listener direto ou parser
     // O peso já vem convertido do parser/listener, então apenas resolve a Promise
     callbackPesoRecebido = (pesoConvertido: string) => {
@@ -437,10 +441,14 @@ function lerPeso(
         if (timeoutModoContinuo) clearTimeout(timeoutModoContinuo);
         callbackPesoRecebido = null;
 
-        // Remover listeners do parser para evitar erros
+        // Remover listeners do parser para evitar erros (apenas se existirem)
         if (parser) {
-          parser.removeListener('data', onDataContinuo);
-          parser.removeListener('data', onData);
+          if (onDataContinuoRef) {
+            parser.removeListener('data', onDataContinuoRef);
+          }
+          if (onDataRef) {
+            parser.removeListener('data', onDataRef);
+          }
         }
 
         console.log(
@@ -452,7 +460,7 @@ function lerPeso(
       }
     };
 
-    const onDataContinuo = (data: string | Buffer) => {
+    onDataContinuoRef = (data: string | Buffer) => {
       if (pesoResolvido) return;
 
       let buffer: Buffer;
@@ -485,8 +493,12 @@ function lerPeso(
           if (timeoutModoContinuo) clearTimeout(timeoutModoContinuo);
           if (timeoutId) clearTimeout(timeoutId);
           if (parser) {
-            parser.removeListener('data', onDataContinuo);
-            parser.removeListener('data', onData);
+            if (onDataContinuoRef) {
+              parser.removeListener('data', onDataContinuoRef);
+            }
+            if (onDataRef) {
+              parser.removeListener('data', onDataRef);
+            }
           }
           callbackPesoRecebido = null;
           console.log('Dados recebidos em modo contínuo:', pesoEmKg, 'kg');
@@ -514,8 +526,12 @@ function lerPeso(
           if (timeoutModoContinuo) clearTimeout(timeoutModoContinuo);
           if (timeoutId) clearTimeout(timeoutId);
           if (parser) {
-            parser.removeListener('data', onDataContinuo);
-            parser.removeListener('data', onData);
+            if (onDataContinuoRef) {
+              parser.removeListener('data', onDataContinuoRef);
+            }
+            if (onDataRef) {
+              parser.removeListener('data', onDataRef);
+            }
           }
           callbackPesoRecebido = null;
           console.log(
@@ -529,8 +545,8 @@ function lerPeso(
     };
 
     // Adicionar listener apenas se o parser existir
-    if (parser) {
-      parser.once('data', onDataContinuo);
+    if (parser && onDataContinuoRef) {
+      parser.once('data', onDataContinuoRef);
     }
 
     // Se tentarComandos for true, tentar diferentes formatos de comando Toledo
@@ -654,7 +670,7 @@ function lerPeso(
 
     // Listener temporário para capturar dados do parser (após comandos)
     // Este listener só será usado se o callback não processar os dados
-    const onData = (data: string | Buffer) => {
+    onDataRef = (data: string | Buffer) => {
       // Se já recebeu dados em modo contínuo ou já foi resolvido, ignorar
       if (dadosRecebidosModoContinuo || pesoResolvido) {
         return;
@@ -690,8 +706,12 @@ function lerPeso(
       if (timeoutId) clearTimeout(timeoutId);
       if (timeoutModoContinuo) clearTimeout(timeoutModoContinuo);
       if (parser) {
-        parser.removeListener('data', onData);
-        parser.removeListener('data', onDataContinuo);
+        if (onDataRef) {
+          parser.removeListener('data', onDataRef);
+        }
+        if (onDataContinuoRef) {
+          parser.removeListener('data', onDataContinuoRef);
+        }
       }
       callbackPesoRecebido = null;
 
@@ -700,8 +720,8 @@ function lerPeso(
     };
 
     // Adicionar listener apenas se o parser existir e ainda não foi resolvido
-    if (parser && !pesoResolvido) {
-      parser.once('data', onData);
+    if (parser && !pesoResolvido && onDataRef) {
+      parser.once('data', onDataRef);
     }
   });
 }
