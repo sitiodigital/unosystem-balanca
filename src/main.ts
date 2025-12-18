@@ -190,11 +190,25 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
       parser = newParser;
 
       newParser.on('data', (data: string) => {
-        const peso = data.trim();
-        console.log('Peso recebido (parser):', peso);
+        // Remover caracteres de controle (STX, ETX, etc.) e espaços
+        let pesoBruto = data.replace(/[\x00-\x1F\x7F]/g, '').trim();
+        console.log('Peso recebido (parser) - Raw:', JSON.stringify(pesoBruto));
+        console.log('Peso recebido (parser) - Length:', pesoBruto.length);
+        console.log(
+          'Peso recebido (parser) - Hex:',
+          Buffer.from(pesoBruto, 'utf8').toString('hex')
+        );
 
-        // Enviar peso para a janela principal
-        mainWindow?.webContents.send('peso-balanca', peso);
+        // Converter peso para quilogramas
+        const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
+        console.log('Resultado da conversão:', pesoEmKg);
+        if (!pesoEmKg) {
+          console.log('Peso inválido recebido do parser, ignorando...');
+          return;
+        }
+
+        // Enviar peso convertido para a janela principal
+        mainWindow?.webContents.send('peso-balanca', pesoEmKg);
 
         // Enviar peso para a WebView via JavaScript injetado
         if (webViewWindow && !webViewWindow.isDestroyed()) {
@@ -202,18 +216,18 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
           const script = `
             (function() {
               // Disparar evento customizado
-              window.dispatchEvent(new CustomEvent('peso-balanca', { detail: '${peso.replace(
+              window.dispatchEvent(new CustomEvent('peso-balanca', { detail: '${pesoEmKg.replace(
                 /'/g,
                 "\\'"
               )}' }));
               
               // Também disponibilizar via função global (caso a página precise)
               if (typeof window.onPesoBalança === 'function') {
-                window.onPesoBalança('${peso.replace(/'/g, "\\'")}');
+                window.onPesoBalança('${pesoEmKg.replace(/'/g, "\\'")}');
               }
               
               // E via propriedade global
-              window.pesoBalançaAtual = '${peso.replace(/'/g, "\\'")}';
+              window.pesoBalançaAtual = '${pesoEmKg.replace(/'/g, "\\'")}';
             })();
           `;
 
