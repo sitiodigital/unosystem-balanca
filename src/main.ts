@@ -63,6 +63,8 @@ function criarWebView(enderecoSistema: string) {
     // e que o listener window.addEventListener('message') já está registrado
     setTimeout(() => {
       inicializarMessageChannel();
+      // Configurar escuta de solicitação de peso
+      configurarEscutaSolicitacaoPeso();
     }, 500);
   });
 
@@ -105,10 +107,11 @@ function inicializarMessageChannel(): void {
         // isso indica que o usuário solicitou o peso (clicou no botão)
         port2.onmessage = function(event) {
           console.log('Solicitação de peso recebida do JavaScript via port:', event.data);
-          // Quando receber 'message', podemos solicitar um novo peso da balança
-          // Mas como o peso já é enviado automaticamente quando recebido, 
-          // apenas logamos a solicitação
-          // Se necessário, podemos adicionar lógica aqui para forçar uma nova leitura
+          // Quando receber 'message', solicitar um novo peso da balança
+          // Disparar evento customizado que será capturado pelo processo principal
+          window.dispatchEvent(new CustomEvent('electron-solicitar-peso-balança', { 
+            detail: { origem: 'port-message' } 
+          }));
         };
 
         // Iniciar o port2 para receber mensagens
@@ -146,6 +149,67 @@ function inicializarMessageChannel(): void {
         }
       }, 1000);
     });
+}
+
+// Função para configurar escuta de solicitação de peso da WebView
+function configurarEscutaSolicitacaoPeso(): void {
+  if (!webViewWindow || webViewWindow.isDestroyed()) {
+    return;
+  }
+
+  // Injetar código que escuta o evento customizado e notifica o processo principal
+  const script = `
+    (function() {
+      // Escutar evento customizado disparado pelo port2
+      window.addEventListener('electron-solicitar-peso-balança', function(event) {
+        console.log('Evento de solicitação de peso recebido, notificando processo principal...');
+        // Enviar mensagem para o processo principal via console.log com prefixo especial
+        // O processo principal escutará console messages
+        console.log('__ELECTRON_SOLICITAR_PESO__');
+      });
+      console.log('Escuta de solicitação de peso configurada');
+    })();
+  `;
+
+  webViewWindow.webContents.executeJavaScript(script).catch((err) => {
+    console.error('Erro ao configurar escuta de solicitação:', err);
+  });
+
+  // Escutar mensagens do console da WebView
+  webViewWindow.webContents.on('console-message', (event, level, message) => {
+    if (message === '__ELECTRON_SOLICITAR_PESO__') {
+      console.log(
+        'Solicitação de peso recebida da WebView, lendo peso da balança...'
+      );
+      // Solicitar peso da balança
+      solicitarPesoParaWebView();
+    }
+  });
+}
+
+// Função para solicitar peso da balança e enviar para WebView
+async function solicitarPesoParaWebView(): Promise<void> {
+  if (!serialPort || !serialPort.isOpen) {
+    console.log(
+      'Conexão serial não está aberta, não é possível solicitar peso'
+    );
+    return;
+  }
+
+  try {
+    console.log('Solicitando peso da balança...');
+    // Ler peso com timeout de 5 segundos
+    const pesoEmKg = await lerPeso(5000, true);
+    console.log('Peso lido:', pesoEmKg);
+
+    // Extrair valor numérico bruto (multiplicar por 1000 para converter de kg para gramas)
+    const pesoNumerico = Math.round(parseFloat(pesoEmKg) * 1000);
+
+    // Enviar para WebView
+    enviarPesoParaWebView(pesoNumerico);
+  } catch (error: any) {
+    console.error('Erro ao solicitar peso:', error.message);
+  }
 }
 
 function fecharConexaoSerial() {
