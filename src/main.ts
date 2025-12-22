@@ -10,6 +10,8 @@ let serialPort: SerialPort | null = null;
 let parser: ReadlineParser | null = null;
 // Callback para processar peso quando recebido diretamente
 let callbackPesoRecebido: ((peso: string) => void) | null = null;
+// Flag para controlar se o MessageChannel já foi inicializado na WebView
+let messageChannelInicializado: boolean = false;
 
 interface SerialConfig {
   port: string;
@@ -50,9 +52,104 @@ function criarWebView(enderecoSistema: string) {
 
   webViewWindow.loadURL(enderecoSistema);
 
+  // Resetar flag quando criar nova WebView
+  messageChannelInicializado = false;
+
+  // Quando a página carregar completamente, inicializar o MessageChannel
+  webViewWindow.webContents.on('did-finish-load', () => {
+    // Resetar flag quando a página recarregar
+    messageChannelInicializado = false;
+    // Aguardar um pouco para garantir que o JavaScript da página foi executado
+    setTimeout(() => {
+      inicializarMessageChannel();
+    }, 500);
+  });
+
   webViewWindow.on('closed', () => {
     webViewWindow = null;
+    messageChannelInicializado = false;
   });
+}
+
+// Função para inicializar o MessageChannel na WebView
+// Isso cria um canal de comunicação que permite ao JavaScript usar _port.postMessage()
+function inicializarMessageChannel(): void {
+  if (
+    !webViewWindow ||
+    webViewWindow.isDestroyed() ||
+    messageChannelInicializado
+  ) {
+    return;
+  }
+
+  const script = `
+    (function() {
+      // Criar MessageChannel apenas uma vez
+      if (window._balancaMessageChannel) {
+        console.log('MessageChannel já inicializado');
+        return; // Já foi inicializado
+      }
+
+      try {
+        // Criar um MessageChannel
+        const channel = new MessageChannel();
+        const port1 = channel.port1;
+        const port2 = channel.port2;
+
+        // Armazenar o port2 para uso posterior (caso necessário)
+        window._balancaPort2 = port2;
+
+        // Criar um listener no port2 para receber mensagens do JavaScript
+        // Quando o JavaScript enviar 'message' via _port.postMessage('message'),
+        // isso indica que o usuário solicitou o peso (clicou no botão)
+        port2.onmessage = function(event) {
+          console.log('Solicitação de peso recebida do JavaScript via port:', event.data);
+          // Quando receber 'message', podemos solicitar um novo peso da balança
+          // Mas como o peso já é enviado automaticamente quando recebido, 
+          // apenas logamos a solicitação
+          // Se necessário, podemos adicionar lógica aqui para forçar uma nova leitura
+        };
+
+        // Iniciar o port2 para receber mensagens
+        port2.start();
+
+        // Enviar o port1 para a própria janela via postMessage
+        // Isso fará com que o listener window.addEventListener('message') receba o port
+        // O código JavaScript espera: event.ports[0] na primeira mensagem
+        // Enviar múltiplas vezes para garantir que seja capturado mesmo se o listener
+        // já estiver registrado ou se houver algum delay
+        window.postMessage({ peso: null }, '*', [port1]);
+        
+        // Enviar novamente após um pequeno delay para garantir que seja capturado
+        setTimeout(function() {
+          window.postMessage({ peso: null }, '*', [port1]);
+        }, 500);
+
+        // Marcar como inicializado
+        window._balancaMessageChannel = channel;
+
+        console.log('MessageChannel inicializado para comunicação com balança');
+      } catch (error) {
+        console.error('Erro ao criar MessageChannel:', error);
+      }
+    })();
+  `;
+
+  webViewWindow.webContents
+    .executeJavaScript(script)
+    .then(() => {
+      messageChannelInicializado = true;
+      console.log('MessageChannel inicializado com sucesso na WebView');
+    })
+    .catch((err) => {
+      console.error('Erro ao inicializar MessageChannel:', err);
+      // Tentar novamente após um delay
+      setTimeout(() => {
+        if (!messageChannelInicializado) {
+          inicializarMessageChannel();
+        }
+      }, 1000);
+    });
 }
 
 function fecharConexaoSerial() {
@@ -365,6 +462,16 @@ function converterPesoParaQuilogramas(pesoBruto: string): string | null {
 // O formato deve ser compatível com o listener: window.addEventListener('message', ...)
 function enviarPesoParaWebView(pesoNumerico: number): void {
   if (!webViewWindow || webViewWindow.isDestroyed()) {
+    return;
+  }
+
+  // Garantir que o MessageChannel está inicializado antes de enviar
+  if (!messageChannelInicializado) {
+    inicializarMessageChannel();
+    // Aguardar um pouco para garantir que o MessageChannel foi inicializado
+    setTimeout(() => {
+      enviarPesoParaWebView(pesoNumerico);
+    }, 500);
     return;
   }
 
