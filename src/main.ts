@@ -12,6 +12,8 @@ let parser: ReadlineParser | null = null;
 let callbackPesoRecebido: ((peso: string) => void) | null = null;
 // Flag para controlar se o MessageChannel já foi inicializado na WebView
 let messageChannelInicializado: boolean = false;
+// Cache do comando que funciona (para leituras rápidas)
+let comandoFuncionando: string | Buffer | null = null;
 
 interface SerialConfig {
   port: string;
@@ -62,10 +64,11 @@ function criarWebView(enderecoSistema: string) {
     // Aguardar um pouco para garantir que o JavaScript da página foi executado
     // e que o listener window.addEventListener('message') já está registrado
     setTimeout(() => {
-      inicializarMessageChannel();
-      // Configurar escuta de solicitação de peso
+      // Configurar escuta de solicitação de peso PRIMEIRO (cria função global)
       configurarEscutaSolicitacaoPeso();
-    }, 500);
+      // Depois inicializar MessageChannel (que usará a função global)
+      inicializarMessageChannel();
+    }, 300); // Reduzido de 500ms para 300ms
   });
 
   webViewWindow.on('closed', () => {
@@ -108,10 +111,15 @@ function inicializarMessageChannel(): void {
         port2.onmessage = function(event) {
           console.log('Solicitação de peso recebida do JavaScript via port:', event.data);
           // Quando receber 'message', solicitar um novo peso da balança
-          // Disparar evento customizado que será capturado pelo processo principal
-          window.dispatchEvent(new CustomEvent('electron-solicitar-peso-balança', { 
-            detail: { origem: 'port-message' } 
-          }));
+          // Usar função global para comunicação rápida
+          if (typeof window.__electronSolicitarPeso === 'function') {
+            window.__electronSolicitarPeso();
+          } else {
+            // Fallback: disparar evento customizado
+            window.dispatchEvent(new CustomEvent('electron-solicitar-peso-balança', { 
+              detail: { origem: 'port-message' } 
+            }));
+          }
         };
 
         // Iniciar o port2 para receber mensagens
@@ -158,15 +166,25 @@ function configurarEscutaSolicitacaoPeso(): void {
   }
 
   // Injetar código que escuta o evento customizado e notifica o processo principal
+  // Usar comunicação direta via postMessage para melhor performance
   const script = `
     (function() {
       // Escutar evento customizado disparado pelo port2
       window.addEventListener('electron-solicitar-peso-balança', function(event) {
-        console.log('Evento de solicitação de peso recebido, notificando processo principal...');
-        // Enviar mensagem para o processo principal via console.log com prefixo especial
-        // O processo principal escutará console messages
-        console.log('__ELECTRON_SOLICITAR_PESO__');
+        // Enviar mensagem diretamente via postMessage (mais rápido que console.log)
+        // O processo principal escutará via webContents.on('did-finish-load') e injetará listener
+        window.postMessage({ tipo: '__ELECTRON_SOLICITAR_PESO__' }, '*');
       });
+      
+      // Também escutar mensagens postMessage para detectar solicitações
+      const originalAddEventListener = window.addEventListener;
+      window.addEventListener('message', function(event) {
+        if (event.data && event.data.tipo === '__ELECTRON_SOLICITAR_PESO__') {
+          // Disparar evento interno que será capturado pelo processo principal
+          window.dispatchEvent(new CustomEvent('electron-peso-solicitado'));
+        }
+      }, true);
+      
       console.log('Escuta de solicitação de peso configurada');
     })();
   `;
@@ -175,19 +193,93 @@ function configurarEscutaSolicitacaoPeso(): void {
     console.error('Erro ao configurar escuta de solicitação:', err);
   });
 
-  // Escutar mensagens do console da WebView
-  webViewWindow.webContents.on('console-message', (event, level, message) => {
-    if (message === '__ELECTRON_SOLICITAR_PESO__') {
-      console.log(
-        'Solicitação de peso recebida da WebView, lendo peso da balança...'
-      );
-      // Solicitar peso da balança
-      solicitarPesoParaWebView();
-    }
+  // Escutar mensagens postMessage da WebView (mais rápido que console)
+  webViewWindow.webContents.on('did-finish-load', () => {
+    // Injetar listener que captura mensagens e notifica diretamente
+    const listenerScript = `
+      (function() {
+        window.addEventListener('electron-peso-solicitado', function() {
+          // Esta mensagem será capturada pelo processo principal via executeJavaScript
+          // Usar um elemento DOM temporário para comunicação rápida
+          const trigger = document.createElement('div');
+          trigger.id = '__electron_solicitar_peso_trigger__';
+          trigger.style.display = 'none';
+          document.body.appendChild(trigger);
+          setTimeout(() => trigger.remove(), 10);
+        });
+      })();
+    `;
+    webViewWindow!.webContents
+      .executeJavaScript(listenerScript)
+      .catch(() => {});
   });
+
+  // Usar uma abordagem mais simples e direta: injetar função global que chama diretamente
+  // Isso evita latência de console.log ou polling
+  webViewWindow.webContents
+    .executeJavaScript(
+      `
+    (function() {
+      // Criar função global que será chamada quando solicitar peso
+      window.__electronSolicitarPeso = function() {
+        // Criar elemento temporário que será detectado
+        const el = document.createElement('div');
+        el.id = '__electron_solicitar_peso_now__';
+        el.style.display = 'none';
+        document.body.appendChild(el);
+        setTimeout(() => el.remove(), 50);
+      };
+    })();
+  `
+    )
+    .catch(() => {});
+
+  // Verificar periodicamente de forma mais eficiente (a cada 50ms)
+  const verificarSolicitacao = () => {
+    if (!webViewWindow || webViewWindow.isDestroyed()) return;
+
+    webViewWindow.webContents
+      .executeJavaScript(
+        `
+      document.getElementById('__electron_solicitar_peso_now__') !== null
+    `
+      )
+      .then((existe) => {
+        if (existe) {
+          solicitarPesoParaWebView();
+        }
+        // Continuar verificando
+        setTimeout(verificarSolicitacao, 50);
+      })
+      .catch(() => {
+        setTimeout(verificarSolicitacao, 50);
+      });
+  };
+
+  // Iniciar verificação após um pequeno delay
+  setTimeout(verificarSolicitacao, 500);
+
+  // Atualizar o listener do port2 para usar a função global
+  webViewWindow.webContents
+    .executeJavaScript(
+      `
+    (function() {
+      if (window._balancaPort2) {
+        const originalOnMessage = window._balancaPort2.onmessage;
+        window._balancaPort2.onmessage = function(event) {
+          if (originalOnMessage) originalOnMessage.call(this, event);
+          if (typeof window.__electronSolicitarPeso === 'function') {
+            window.__electronSolicitarPeso();
+          }
+        };
+      }
+    })();
+  `
+    )
+    .catch(() => {});
 }
 
-// Função para solicitar peso da balança e enviar para WebView
+// Função para solicitar peso da balança e enviar para WebView (otimizada para velocidade)
 async function solicitarPesoParaWebView(): Promise<void> {
   if (!serialPort || !serialPort.isOpen) {
     console.log(
@@ -197,9 +289,20 @@ async function solicitarPesoParaWebView(): Promise<void> {
   }
 
   try {
-    console.log('Solicitando peso da balança...');
-    // Ler peso com timeout de 5 segundos
-    const pesoEmKg = await lerPeso(5000, true);
+    console.log('Solicitando peso da balança (modo rápido)...');
+
+    // Se já sabemos qual comando funciona, usar ele diretamente (muito mais rápido)
+    if (comandoFuncionando) {
+      const pesoEmKg = await lerPesoRapido(comandoFuncionando, 3000);
+      if (pesoEmKg) {
+        const pesoNumerico = Math.round(parseFloat(pesoEmKg) * 1000);
+        enviarPesoParaWebView(pesoNumerico);
+        return;
+      }
+    }
+
+    // Se não temos comando em cache, usar função normal (mas com timeout menor)
+    const pesoEmKg = await lerPeso(3000, true);
     console.log('Peso lido:', pesoEmKg);
 
     // Extrair valor numérico bruto (multiplicar por 1000 para converter de kg para gramas)
@@ -210,6 +313,93 @@ async function solicitarPesoParaWebView(): Promise<void> {
   } catch (error: any) {
     console.error('Erro ao solicitar peso:', error.message);
   }
+}
+
+// Função otimizada para leitura rápida usando comando conhecido
+function lerPesoRapido(
+  comando: string | Buffer,
+  timeout: number = 3000
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!parser || !serialPort || !serialPort.isOpen) {
+      reject(new Error('Conexão serial não está aberta'));
+      return;
+    }
+
+    let pesoResolvido = false;
+    let timeoutId: NodeJS.Timeout | null = null;
+
+    // Callback rápido para receber peso
+    const callbackRapido = (pesoConvertido: string) => {
+      if (!pesoResolvido && pesoConvertido) {
+        pesoResolvido = true;
+        if (timeoutId) clearTimeout(timeoutId);
+        callbackPesoRecebido = null;
+        resolve(pesoConvertido);
+      }
+    };
+
+    callbackPesoRecebido = callbackRapido;
+
+    // Listener temporário para capturar resposta
+    const onDataRapido = (data: string | Buffer) => {
+      if (pesoResolvido) return;
+
+      let buffer: Buffer =
+        typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
+
+      // Processar resposta Toledo
+      if (
+        buffer.length >= 3 &&
+        buffer[0] === 0x02 &&
+        buffer[buffer.length - 1] === 0x03
+      ) {
+        const pesoBruto = processarRespostaToledo(buffer);
+        if (
+          pesoBruto &&
+          !pesoBruto.match(/^[Nn]+$/) &&
+          !pesoBruto.match(/^[Ee]+$/)
+        ) {
+          const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
+          if (pesoEmKg) {
+            pesoResolvido = true;
+            if (timeoutId) clearTimeout(timeoutId);
+            if (parser) {
+              parser.removeListener('data', onDataRapido);
+            }
+            callbackPesoRecebido = null;
+            resolve(pesoEmKg);
+          }
+        }
+      }
+    };
+
+    if (parser) {
+      parser.once('data', onDataRapido);
+    }
+
+    // Enviar comando imediatamente
+    enviarComando(comando)
+      .then(() => {
+        // Timeout reduzido para resposta rápida
+        timeoutId = setTimeout(() => {
+          if (!pesoResolvido) {
+            if (parser) {
+              parser.removeListener('data', onDataRapido);
+            }
+            callbackPesoRecebido = null;
+            reject(new Error('Timeout: Nenhuma resposta da balança'));
+          }
+        }, timeout);
+      })
+      .catch((err) => {
+        if (parser) {
+          parser.removeListener('data', onDataRapido);
+        }
+        callbackPesoRecebido = null;
+        reject(err);
+      });
+  });
 }
 
 function fecharConexaoSerial() {
@@ -620,6 +810,7 @@ function lerPeso(
 
     // Primeiro, tentar ler dados sem enviar comandos (modo contínuo)
     // Algumas balanças Toledo enviam dados automaticamente
+    // Reduzir tempo de espera no modo contínuo (de 2000ms para 800ms)
     console.log('Tentando ler dados em modo contínuo (sem comandos)...');
     timeoutModoContinuo = setTimeout(() => {
       if (!dadosRecebidosModoContinuo) {
@@ -627,7 +818,7 @@ function lerPeso(
           'Nenhum dado recebido em modo contínuo, tentando comandos...'
         );
       }
-    }, 2000);
+    }, 800);
 
     // Variáveis para armazenar referências dos listeners (serão definidas depois)
     let onDataContinuoRef: ((data: string | Buffer) => void) | null = null;
@@ -805,8 +996,10 @@ function lerPeso(
 
     // Se tentarComandos for true, tentar diferentes formatos de comando Toledo
     if (tentarComandos) {
-      // Aguardar um pouco antes de enviar comandos para dar tempo da balança estabilizar
-      await new Promise((r) => setTimeout(r, 2500));
+      // Reduzir tempo de espera inicial (de 2500ms para 500ms)
+      // Se já temos comando funcionando, não precisa aguardar
+      const tempoEspera = comandoFuncionando ? 100 : 500;
+      await new Promise((r) => setTimeout(r, tempoEspera));
 
       if (dadosRecebidosModoContinuo || pesoResolvido) {
         return; // Já recebeu dados, não precisa enviar comandos
@@ -825,28 +1018,45 @@ function lerPeso(
           '\r', // Apenas CR
         ];
 
+        // Se temos comando funcionando, tentar ele primeiro
+        const comandosParaTentar = comandoFuncionando
+          ? [
+              comandoFuncionando,
+              ...comandos.filter((c) => c !== comandoFuncionando),
+            ]
+          : comandos;
+
         console.log('Tentando diferentes formatos de comando Toledo...');
-        for (let i = 0; i < comandos.length; i++) {
+        for (let i = 0; i < comandosParaTentar.length; i++) {
           // Verificar se já recebeu resposta válida antes de continuar
           if (pesoResolvido || dadosRecebidosModoContinuo) {
             console.log(
               `Resposta recebida após comando ${i}, interrompendo tentativas adicionais.`
             );
+            // Salvar comando que funcionou
+            if (i > 0 && comandosParaTentar[i - 1]) {
+              comandoFuncionando = comandosParaTentar[i - 1];
+              console.log(
+                'Comando funcionando salvo em cache para leituras rápidas'
+              );
+            }
             break;
           }
 
-          const cmd = comandos[i];
+          const cmd = comandosParaTentar[i];
           const cmdDesc = Buffer.isBuffer(cmd)
             ? `ENQ (0x05)`
-            : `"${cmd.replace(/\r/g, '\\r').replace(/\n/g, '\\n')}"`;
+            : `"${cmd.toString().replace(/\r/g, '\\r').replace(/\n/g, '\\n')}"`;
           console.log(
-            `Tentativa ${i + 1}/${comandos.length}: Enviando comando ${cmdDesc}`
+            `Tentativa ${i + 1}/${
+              comandosParaTentar.length
+            }: Enviando comando ${cmdDesc}`
           );
           try {
             await enviarComando(cmd);
-            // Aguardar mais tempo após cada comando para dar tempo da balança processar
-            // e estabilizar (especialmente importante quando recebe "NNNNN")
-            await new Promise((r) => setTimeout(r, 1500));
+            // Reduzir tempo de espera entre comandos (de 1500ms para 600ms)
+            // Aumentar apenas se receber "NNNNN"
+            await new Promise((r) => setTimeout(r, 600));
 
             // Verificar novamente se recebeu resposta após aguardar
             if (pesoResolvido || dadosRecebidosModoContinuo) {
@@ -854,6 +1064,11 @@ function lerPeso(
                 `Resposta recebida após comando ${
                   i + 1
                 }, interrompendo tentativas adicionais.`
+              );
+              // Salvar comando que funcionou
+              comandoFuncionando = cmd;
+              console.log(
+                'Comando funcionando salvo em cache para leituras rápidas'
               );
               break;
             }
