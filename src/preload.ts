@@ -31,4 +31,7 @@ contextBridge.exposeInMainWorld('balanca', {
   removerListenerPeso: () => {
     ipcRenderer.removeAllListeners('peso-balanca');
   },
+
+  // Sair do modo fullscreen
+  sairFullscreen: () => ipcRenderer.invoke('sair-fullscreen'),
 });

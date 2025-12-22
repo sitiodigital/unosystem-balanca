@@ -13,6 +13,7 @@ declare global {
       ) => Promise<{ sucesso: boolean; erro?: string }>;
       onPeso: (callback: (peso: string) => void) => void;
       removerListenerPeso: () => void;
+      sairFullscreen: () => Promise<{ sucesso: boolean; erro?: string }>;
     };
   }
 
@@ -308,5 +309,28 @@ if (savedConfig) {
 
 // Carregar portas ao iniciar
 carregarPortas();
+
+// Capturar tecla ESC para sair do modo fullscreen
+document.addEventListener('keydown', async (event) => {
+  // Verificar se a tecla pressionada é ESC (Escape)
+  if (event.key === 'Escape' || event.keyCode === 27) {
+    // Prevenir comportamento padrão (não sair do fullscreen automaticamente)
+    event.preventDefault();
+    
+    // Sair do modo fullscreen via IPC
+    if (window.balanca && typeof window.balanca.sairFullscreen === 'function') {
+      try {
+        const resultado = await window.balanca.sairFullscreen();
+        if (resultado.sucesso) {
+          console.log('Saiu do modo fullscreen');
+        } else {
+          console.warn('Erro ao sair do fullscreen:', resultado.erro);
+        }
+      } catch (error) {
+        console.error('Erro ao tentar sair do fullscreen:', error);
+      }
+    }
+  }
+});
 
 export {};

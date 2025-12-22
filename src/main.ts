@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu } from 'electron';
 import path from 'path';
 import { SerialPort } from 'serialport';
 import { ReadlineParser } from '@serialport/parser-readline';
@@ -27,6 +27,8 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 800,
     height: 700,
+    fullscreen: true, // Abrir em tela cheia
+    autoHideMenuBar: true, // Esconder barra de menu automaticamente
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -34,7 +36,18 @@ function createWindow() {
     },
   });
 
+  // Garantir que a janela fique em fullscreen
+  mainWindow.setFullScreen(true);
+
+  // Remover menu completamente
+  mainWindow.setMenuBarVisibility(false);
+
   mainWindow.loadFile(path.join(__dirname, 'renderer/index.html'));
+
+  // Prevenir que o menu apareça ao pressionar Alt
+  mainWindow.on('focus', () => {
+    mainWindow?.setMenuBarVisibility(false);
+  });
 }
 
 function criarWebView(enderecoSistema: string) {
@@ -46,11 +59,19 @@ function criarWebView(enderecoSistema: string) {
   webViewWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    fullscreen: true, // Abrir em tela cheia
+    autoHideMenuBar: true, // Esconder barra de menu automaticamente
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
     },
   });
+
+  // Garantir que a janela fique em fullscreen
+  webViewWindow.setFullScreen(true);
+
+  // Remover menu completamente
+  webViewWindow.setMenuBarVisibility(false);
 
   webViewWindow.loadURL(enderecoSistema);
 
@@ -70,7 +91,14 @@ function criarWebView(enderecoSistema: string) {
       inicializarMessageChannel();
       // Configurar escuta para mensagens de navegação (deve ser configurado após o carregamento)
       configurarEscutaNavegacao();
+      // Configurar captura de ESC para sair do fullscreen
+      configurarEscutaESC();
     }, 300); // Reduzido de 500ms para 300ms
+  });
+
+  // Prevenir que o menu apareça ao pressionar Alt
+  webViewWindow.on('focus', () => {
+    webViewWindow?.setMenuBarVisibility(false);
   });
 
   webViewWindow.on('closed', () => {
@@ -373,6 +401,93 @@ function configurarEscutaNavegacao(): void {
 
   // Iniciar verificação após um pequeno delay
   setTimeout(verificarNavegacao, 500);
+}
+
+// Função para configurar escuta de ESC na WebView para sair do fullscreen
+function configurarEscutaESC(): void {
+  if (!webViewWindow || webViewWindow.isDestroyed()) {
+    return;
+  }
+
+  console.log('Configurando escuta de ESC na WebView');
+
+  // Injetar código JavaScript para capturar ESC
+  webViewWindow.webContents
+    .executeJavaScript(
+      `
+    (function() {
+      // Criar função para solicitar sair do fullscreen
+      if (!window.__electronSairFullscreen) {
+        window.__electronSairFullscreen = function() {
+          // Criar elemento temporário que será detectado pelo processo principal
+          const el = document.createElement('div');
+          el.id = '__electron_sair_fullscreen__';
+          el.style.display = 'none';
+          document.body.appendChild(el);
+          setTimeout(() => el.remove(), 50);
+        };
+      }
+      
+      // Escutar tecla ESC
+      if (window.__electronESCListener) {
+        document.removeEventListener('keydown', window.__electronESCListener);
+      }
+      
+      window.__electronESCListener = function(event) {
+        // Verificar se a tecla pressionada é ESC (Escape)
+        if (event.key === 'Escape' || event.keyCode === 27) {
+          event.preventDefault();
+          event.stopPropagation();
+          console.log('ESC pressionado na WebView');
+          if (typeof window.__electronSairFullscreen === 'function') {
+            window.__electronSairFullscreen();
+          }
+          return false;
+        }
+      };
+      
+      document.addEventListener('keydown', window.__electronESCListener, true);
+      console.log('Escuta de ESC configurada na WebView');
+    })();
+  `
+    )
+    .then(() => {
+      console.log('Script de ESC injetado com sucesso na WebView');
+    })
+    .catch((err) => {
+      console.error('Erro ao injetar script de ESC:', err);
+    });
+
+  // Verificar periodicamente se há solicitação para sair do fullscreen
+  const verificarESC = () => {
+    if (!webViewWindow || webViewWindow.isDestroyed()) return;
+
+    webViewWindow.webContents
+      .executeJavaScript(
+        `
+      document.getElementById('__electron_sair_fullscreen__') !== null
+    `
+      )
+      .then((existe) => {
+        if (existe) {
+          console.log(
+            'Solicitação para sair do fullscreen detectada na WebView'
+          );
+          if (webViewWindow && !webViewWindow.isDestroyed()) {
+            webViewWindow.setFullScreen(false);
+          }
+        }
+        // Continuar verificando
+        setTimeout(verificarESC, 100);
+      })
+      .catch((err) => {
+        console.error('Erro ao verificar ESC:', err);
+        setTimeout(verificarESC, 100);
+      });
+  };
+
+  // Iniciar verificação após um pequeno delay
+  setTimeout(verificarESC, 500);
 }
 
 // Função para solicitar peso da balança e enviar para WebView (otimizada para velocidade)
@@ -1388,6 +1503,9 @@ ipcMain.handle('abrir-tela-inicial', async () => {
       } else {
         mainWindow.focus();
         mainWindow.show();
+        // Garantir fullscreen e sem menu
+        mainWindow.setFullScreen(true);
+        mainWindow.setMenuBarVisibility(false);
       }
     } else {
       createWindow();
@@ -1399,7 +1517,25 @@ ipcMain.handle('abrir-tela-inicial', async () => {
   }
 });
 
+// Handler para sair do modo fullscreen
+ipcMain.handle('sair-fullscreen', async () => {
+  try {
+    const focusedWindow = BrowserWindow.getFocusedWindow();
+    if (focusedWindow) {
+      focusedWindow.setFullScreen(false);
+      return { sucesso: true };
+    }
+    return { sucesso: false, erro: 'Nenhuma janela focada' };
+  } catch (error: any) {
+    console.error('Erro ao sair do fullscreen:', error);
+    return { sucesso: false, erro: error.message };
+  }
+});
+
 app.whenReady().then(() => {
+  // Remover completamente o menu da aplicação
+  Menu.setApplicationMenu(null);
+
   createWindow();
 
   app.on('window-all-closed', () => {
@@ -1414,6 +1550,8 @@ app.whenReady().then(() => {
       createWindow();
     }
   });
+
+  // Prevenir que o menu apareça - os listeners individuais nas janelas já cuidam disso
 });
 
 app.on('before-quit', () => {
