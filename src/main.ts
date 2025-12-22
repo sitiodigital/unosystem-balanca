@@ -60,6 +60,7 @@ function criarWebView(enderecoSistema: string) {
     // Resetar flag quando a página recarregar
     messageChannelInicializado = false;
     // Aguardar um pouco para garantir que o JavaScript da página foi executado
+    // e que o listener window.addEventListener('message') já está registrado
     setTimeout(() => {
       inicializarMessageChannel();
     }, 500);
@@ -116,19 +117,14 @@ function inicializarMessageChannel(): void {
         // Enviar o port1 para a própria janela via postMessage
         // Isso fará com que o listener window.addEventListener('message') receba o port
         // O código JavaScript espera: event.ports[0] na primeira mensagem
-        // Enviar múltiplas vezes para garantir que seja capturado mesmo se o listener
-        // já estiver registrado ou se houver algum delay
+        // IMPORTANTE: Um port só pode ser transferido uma vez via postMessage
+        // Após ser transferido, ele fica "neutered" e não pode ser usado novamente
         window.postMessage({ peso: null }, '*', [port1]);
-        
-        // Enviar novamente após um pequeno delay para garantir que seja capturado
-        setTimeout(function() {
-          window.postMessage({ peso: null }, '*', [port1]);
-        }, 500);
 
         // Marcar como inicializado
         window._balancaMessageChannel = channel;
 
-        console.log('MessageChannel inicializado para comunicação com balança');
+        console.log('MessageChannel inicializado para comunicação com balança - port1 enviado');
       } catch (error) {
         console.error('Erro ao criar MessageChannel:', error);
       }
