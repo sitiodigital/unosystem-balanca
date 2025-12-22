@@ -68,6 +68,8 @@ function criarWebView(enderecoSistema: string) {
       configurarEscutaSolicitacaoPeso();
       // Depois inicializar MessageChannel (que usará a função global)
       inicializarMessageChannel();
+      // Configurar escuta para mensagens de navegação (deve ser configurado após o carregamento)
+      configurarEscutaNavegacao();
     }, 300); // Reduzido de 500ms para 300ms
   });
 
@@ -277,6 +279,100 @@ function configurarEscutaSolicitacaoPeso(): void {
   `
     )
     .catch(() => {});
+}
+
+// Função para configurar escuta de mensagens de navegação da WebView
+function configurarEscutaNavegacao(): void {
+  if (!webViewWindow || webViewWindow.isDestroyed()) {
+    return;
+  }
+
+  console.log('Configurando escuta de navegação na WebView');
+
+  // Criar função global que será chamada quando solicitar navegação
+  webViewWindow.webContents
+    .executeJavaScript(
+      `
+    (function() {
+      // Criar função global que será chamada quando solicitar abrir tela inicial
+      if (!window.__electronAbrirTelaInicial) {
+        window.__electronAbrirTelaInicial = function() {
+          console.log('Função __electronAbrirTelaInicial chamada');
+          // Criar elemento temporário que será detectado pelo processo principal
+          const el = document.createElement('div');
+          el.id = '__electron_abrir_tela_inicial__';
+          el.style.display = 'none';
+          document.body.appendChild(el);
+          setTimeout(() => el.remove(), 50);
+        };
+      }
+      
+      // Escutar mensagens postMessage para navegação
+      // Remover listener anterior se existir para evitar duplicatas
+      if (window.__electronNavigationListener) {
+        window.removeEventListener('message', window.__electronNavigationListener);
+      }
+      
+      window.__electronNavigationListener = function(event) {
+        if (event.data && event.data.tipo === '__ELECTRON_ABRIR_TELA_INICIAL__') {
+          console.log('Mensagem de navegação recebida:', event.data);
+          if (typeof window.__electronAbrirTelaInicial === 'function') {
+            window.__electronAbrirTelaInicial();
+          }
+        }
+      };
+      
+      window.addEventListener('message', window.__electronNavigationListener);
+      console.log('Escuta de navegação configurada');
+    })();
+  `
+    )
+    .then(() => {
+      console.log('Script de navegação injetado com sucesso');
+    })
+    .catch((err) => {
+      console.error('Erro ao injetar script de navegação:', err);
+    });
+
+  // Verificar periodicamente se há solicitação para abrir tela inicial
+  const verificarNavegacao = () => {
+    if (!webViewWindow || webViewWindow.isDestroyed()) return;
+
+    webViewWindow.webContents
+      .executeJavaScript(
+        `
+      document.getElementById('__electron_abrir_tela_inicial__') !== null
+    `
+      )
+      .then((existe) => {
+        if (existe) {
+          console.log('Solicitação para abrir tela inicial detectada');
+          // Abrir/focar janela principal
+          if (mainWindow) {
+            if (mainWindow.isDestroyed()) {
+              console.log('Criando nova janela principal');
+              createWindow();
+            } else {
+              console.log('Focando janela principal existente');
+              mainWindow.focus();
+              mainWindow.show();
+            }
+          } else {
+            console.log('Criando janela principal (não existe)');
+            createWindow();
+          }
+        }
+        // Continuar verificando
+        setTimeout(verificarNavegacao, 100);
+      })
+      .catch((err) => {
+        console.error('Erro ao verificar navegação:', err);
+        setTimeout(verificarNavegacao, 100);
+      });
+  };
+
+  // Iniciar verificação após um pequeno delay
+  setTimeout(verificarNavegacao, 500);
 }
 
 // Função para solicitar peso da balança e enviar para WebView (otimizada para velocidade)
@@ -1282,6 +1378,26 @@ ipcMain.handle(
     }
   }
 );
+
+// Handler para focar/abrir a janela principal quando solicitado da WebView
+ipcMain.handle('abrir-tela-inicial', async () => {
+  try {
+    if (mainWindow) {
+      if (mainWindow.isDestroyed()) {
+        createWindow();
+      } else {
+        mainWindow.focus();
+        mainWindow.show();
+      }
+    } else {
+      createWindow();
+    }
+    return { sucesso: true };
+  } catch (error: any) {
+    console.error('Erro ao abrir tela inicial:', error);
+    return { sucesso: false, erro: error.message };
+  }
+});
 
 app.whenReady().then(() => {
   createWindow();

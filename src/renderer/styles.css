@@ -24,11 +24,18 @@ body {
   width: 100%;
 }
 
+.logo {
+  display: block;
+  margin: 0 auto 20px auto;
+  max-width: 200px;
+  height: auto;
+}
+
 h1 {
   color: #333;
   margin-bottom: 30px;
   text-align: center;
-  font-size: 28px;
+  font-size: 18px;
   font-weight: 600;
 }
 

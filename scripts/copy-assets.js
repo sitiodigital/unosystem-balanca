@@ -24,6 +24,21 @@ filesToCopy.forEach((file) => {
   }
 });
 
+// Copiar todos os arquivos de imagem (png, jpg, jpeg, gif, svg, webp)
+const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'];
+if (fs.existsSync(srcDir)) {
+  const files = fs.readdirSync(srcDir);
+  files.forEach((file) => {
+    const ext = path.extname(file).toLowerCase();
+    if (imageExtensions.includes(ext)) {
+      const srcFile = path.join(srcDir, file);
+      const distFile = path.join(distDir, file);
+      fs.copyFileSync(srcFile, distFile);
+      console.log(`Copiado: ${file}`);
+    }
+  });
+}
+
 // Remover exports do renderer.js (CommonJS não funciona no browser)
 const rendererJsPath = path.join(distDir, 'renderer.js');
 if (fs.existsSync(rendererJsPath)) {

@@ -39,6 +39,86 @@ const statusMessage = document.getElementById(
   'statusMessage'
 ) as HTMLDivElement;
 
+// Chave para armazenar dados no localStorage
+const STORAGE_KEY = 'balanca_config';
+
+// Interface para os dados salvos
+interface SavedConfig {
+  enderecoSistema: string;
+  portaSerial: string;
+  baudRate: string;
+  dataBits: string;
+  parity: string;
+  stopBits: string;
+}
+
+// Função para salvar configuração no localStorage
+function salvarConfiguracao() {
+  const config: SavedConfig = {
+    enderecoSistema: (document.getElementById('enderecoSistema') as HTMLInputElement).value.trim(),
+    portaSerial: portaSerialSelect.value,
+    baudRate: (document.getElementById('baudRate') as HTMLSelectElement).value,
+    dataBits: (document.getElementById('dataBits') as HTMLSelectElement).value,
+    parity: (document.getElementById('parity') as HTMLSelectElement).value,
+    stopBits: (document.getElementById('stopBits') as HTMLSelectElement).value,
+  };
+
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+    console.log('Configuração salva no localStorage:', config);
+  } catch (error) {
+    console.error('Erro ao salvar configuração no localStorage:', error);
+  }
+}
+
+// Função para carregar configuração do localStorage
+function carregarConfiguracao(): SavedConfig | null {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      const config = JSON.parse(saved) as SavedConfig;
+      console.log('Configuração carregada do localStorage:', config);
+      return config;
+    }
+  } catch (error) {
+    console.error('Erro ao carregar configuração do localStorage:', error);
+  }
+  return null;
+}
+
+// Função para preencher formulário com dados salvos
+function preencherFormulario(config: SavedConfig) {
+  // Preencher endereço do sistema
+  const enderecoInput = document.getElementById('enderecoSistema') as HTMLInputElement;
+  if (enderecoInput && config.enderecoSistema) {
+    enderecoInput.value = config.enderecoSistema;
+  }
+
+  // Nota: A porta serial será restaurada dentro da função carregarPortas()
+  // após as portas serem carregadas, para garantir que a porta existe
+
+  // Preencher outros campos
+  const baudRateSelect = document.getElementById('baudRate') as HTMLSelectElement;
+  if (baudRateSelect && config.baudRate) {
+    baudRateSelect.value = config.baudRate;
+  }
+
+  const dataBitsSelect = document.getElementById('dataBits') as HTMLSelectElement;
+  if (dataBitsSelect && config.dataBits) {
+    dataBitsSelect.value = config.dataBits;
+  }
+
+  const paritySelect = document.getElementById('parity') as HTMLSelectElement;
+  if (paritySelect && config.parity) {
+    paritySelect.value = config.parity;
+  }
+
+  const stopBitsSelect = document.getElementById('stopBits') as HTMLSelectElement;
+  if (stopBitsSelect && config.stopBits) {
+    stopBitsSelect.value = config.stopBits;
+  }
+}
+
 // Função para exibir mensagem de status
 function mostrarMensagem(texto: string, tipo: 'success' | 'error' | 'info') {
   statusMessage.textContent = texto;
@@ -107,6 +187,16 @@ async function carregarPortas() {
       }`;
       portaSerialSelect.appendChild(option);
     });
+
+    // Após carregar as portas, tentar restaurar a porta salva
+    const savedConfig = carregarConfiguracao();
+    if (savedConfig && savedConfig.portaSerial) {
+      // Verificar se a porta salva ainda existe na lista
+      const portaExiste = portas.some(p => p.path === savedConfig.portaSerial);
+      if (portaExiste) {
+        portaSerialSelect.value = savedConfig.portaSerial;
+      }
+    }
 
     mostrarMensagem(`${portas.length} porta(s) encontrada(s)`, 'success');
   } catch (error: any) {
@@ -187,6 +277,9 @@ form.addEventListener('submit', async (e) => {
     const resultado = await window.balanca.conectar(config, enderecoSistema);
 
     if (resultado.sucesso) {
+      // Salvar configuração no localStorage quando conectar com sucesso
+      salvarConfiguracao();
+      
       mostrarMensagem(
         'Conectado com sucesso! A WebView será aberta em breve.',
         'success'
@@ -206,6 +299,12 @@ form.addEventListener('submit', async (e) => {
     btnConectar.textContent = 'Conectar';
   }
 });
+
+// Carregar configuração salva ao iniciar
+const savedConfig = carregarConfiguracao();
+if (savedConfig) {
+  preencherFormulario(savedConfig);
+}
 
 // Carregar portas ao iniciar
 carregarPortas();
