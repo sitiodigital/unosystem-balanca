@@ -161,6 +161,9 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
         ) {
           const pesoBruto = processarRespostaToledo(data);
           if (pesoBruto) {
+            // Extrair valor numérico bruto para enviar à WebView
+            const pesoNumerico = extrairValorNumericoBruto(pesoBruto);
+
             // Converter peso para quilogramas
             const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
             if (pesoEmKg) {
@@ -171,6 +174,12 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
               );
               // Enviar peso para a janela principal
               mainWindow?.webContents.send('peso-balanca', pesoEmKg);
+
+              // Enviar peso numérico bruto para a WebView
+              if (pesoNumerico !== null) {
+                enviarPesoParaWebView(pesoNumerico);
+              }
+
               // Se há um callback esperando, chamá-lo
               if (callbackPesoRecebido) {
                 callbackPesoRecebido(pesoEmKg);
@@ -199,6 +208,9 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
           Buffer.from(pesoBruto, 'utf8').toString('hex')
         );
 
+        // Extrair valor numérico bruto para enviar à WebView
+        const pesoNumerico = extrairValorNumericoBruto(pesoBruto);
+
         // Converter peso para quilogramas
         const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
         console.log('Resultado da conversão:', pesoEmKg);
@@ -210,42 +222,17 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
         // Enviar peso convertido para a janela principal
         mainWindow?.webContents.send('peso-balanca', pesoEmKg);
 
+        // Enviar peso numérico bruto para a WebView
+        if (pesoNumerico !== null) {
+          enviarPesoParaWebView(pesoNumerico);
+        }
+
         // Se há um callback esperando, chamá-lo com o peso convertido
         // Isso resolve a Promise da função lerPeso
         if (callbackPesoRecebido) {
           console.log('Chamando callback com peso convertido:', pesoEmKg);
           callbackPesoRecebido(pesoEmKg);
           callbackPesoRecebido = null;
-        }
-
-        // Enviar peso para a WebView via JavaScript injetado
-        if (webViewWindow && !webViewWindow.isDestroyed()) {
-          // Criar um evento customizado na página da WebView
-          const script = `
-            (function() {
-              // Disparar evento customizado
-              window.dispatchEvent(new CustomEvent('peso-balanca', { detail: '${pesoEmKg.replace(
-                /'/g,
-                "\\'"
-              )}' }));
-              
-              // Também disponibilizar via função global (caso a página precise)
-              if (typeof window.onPesoBalança === 'function') {
-                window.onPesoBalança('${pesoEmKg.replace(/'/g, "\\'")}');
-              }
-              
-              // E via propriedade global
-              window.pesoBalançaAtual = '${pesoEmKg.replace(/'/g, "\\'")}';
-            })();
-          `;
-
-          webViewWindow.webContents.executeJavaScript(script).catch((err) => {
-            // Ignorar erros se a página ainda não estiver carregada
-            console.log(
-              'Erro ao injetar script na WebView (pode ser normal se a página ainda não carregou):',
-              err.message
-            );
-          });
         }
       });
 
@@ -297,10 +284,10 @@ function enviarComando(comando: string | Buffer): Promise<void> {
   });
 }
 
-// Função para converter peso bruto da balança para quilogramas
+// Função para extrair valor numérico bruto do peso
 // Entrada: string com dígitos (ex: "00415", "ST,GS, 00415 kg", etc.)
-// Saída: string formatada em kg com 3 casas decimais (ex: "0.415") ou null se inválido
-function converterPesoParaQuilogramas(pesoBruto: string): string | null {
+// Saída: número inteiro (ex: 415) ou null se inválido
+function extrairValorNumericoBruto(pesoBruto: string): number | null {
   if (!pesoBruto || typeof pesoBruto !== 'string') {
     return null;
   }
@@ -309,7 +296,6 @@ function converterPesoParaQuilogramas(pesoBruto: string): string | null {
   const matchDigitos = pesoBruto.match(/-?\d+/);
 
   if (!matchDigitos || matchDigitos[0].length === 0) {
-    console.log('Nenhum dígito numérico encontrado no peso bruto:', pesoBruto);
     return null;
   }
 
@@ -320,13 +306,25 @@ function converterPesoParaQuilogramas(pesoBruto: string): string | null {
 
   // Verificar se é um número válido
   if (isNaN(valorNumerico)) {
-    console.log('Valor numérico inválido:', digitos);
     return null;
   }
 
   // Verificar se o valor é razoável (entre -999999 e 999999 para evitar valores absurdos)
   if (Math.abs(valorNumerico) > 999999) {
-    console.log('Valor fora do range esperado:', valorNumerico);
+    return null;
+  }
+
+  return valorNumerico;
+}
+
+// Função para converter peso bruto da balança para quilogramas
+// Entrada: string com dígitos (ex: "00415", "ST,GS, 00415 kg", etc.)
+// Saída: string formatada em kg com 3 casas decimais (ex: "0.415") ou null se inválido
+function converterPesoParaQuilogramas(pesoBruto: string): string | null {
+  const valorNumerico = extrairValorNumericoBruto(pesoBruto);
+
+  if (valorNumerico === null) {
+    console.log('Nenhum dígito numérico encontrado no peso bruto:', pesoBruto);
     return null;
   }
 
@@ -337,10 +335,46 @@ function converterPesoParaQuilogramas(pesoBruto: string): string | null {
   const pesoFormatado = pesoEmKg.toFixed(3);
 
   console.log(
-    `Conversão: "${pesoBruto}" -> ${digitos} -> ${pesoEmKg} kg -> "${pesoFormatado}" kg`
+    `Conversão: "${pesoBruto}" -> ${valorNumerico} -> ${pesoEmKg} kg -> "${pesoFormatado}" kg`
   );
 
   return pesoFormatado;
+}
+
+// Função para enviar peso para a WebView via postMessage
+// O formato deve ser compatível com o listener: window.addEventListener('message', ...)
+function enviarPesoParaWebView(pesoNumerico: number): void {
+  if (!webViewWindow || webViewWindow.isDestroyed()) {
+    return;
+  }
+
+  // Enviar via window.postMessage com o formato esperado pela WebView
+  // O código JavaScript espera: event.data.peso
+  const script = `
+    (function() {
+      try {
+        // Criar um MessageEvent compatível com window.postMessage
+        // O formato esperado é: { peso: valorNumerico }
+        const messageData = { peso: ${pesoNumerico} };
+        
+        // Disparar o evento message na janela
+        // Isso será capturado pelo listener: window.addEventListener('message', ...)
+        window.postMessage(messageData, '*');
+        
+        console.log('Peso enviado para WebView:', ${pesoNumerico});
+      } catch (error) {
+        console.error('Erro ao enviar peso para WebView:', error);
+      }
+    })();
+  `;
+
+  webViewWindow.webContents.executeJavaScript(script).catch((err) => {
+    // Ignorar erros se a página ainda não estiver carregada
+    console.log(
+      'Erro ao injetar script na WebView (pode ser normal se a página ainda não carregou):',
+      err.message
+    );
+  });
 }
 
 // Função para processar resposta no formato Toledo
@@ -478,6 +512,9 @@ function lerPeso(
       ) {
         const pesoBruto = processarRespostaToledo(buffer);
         if (pesoBruto && pesoBruto.length > 0) {
+          // Extrair valor numérico bruto para enviar à WebView
+          const pesoNumerico = extrairValorNumericoBruto(pesoBruto);
+
           // Converter peso para quilogramas
           const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
 
@@ -486,6 +523,11 @@ function lerPeso(
               'Peso inválido recebido em modo contínuo, ignorando...'
             );
             return; // Não resolver, continuar esperando
+          }
+
+          // Enviar peso numérico bruto para a WebView
+          if (pesoNumerico !== null) {
+            enviarPesoParaWebView(pesoNumerico);
           }
 
           dadosRecebidosModoContinuo = true;
@@ -511,6 +553,9 @@ function lerPeso(
             ? data.trim()
             : buffer.toString('utf8').trim();
         if (pesoBruto && pesoBruto.length > 0) {
+          // Extrair valor numérico bruto para enviar à WebView
+          const pesoNumerico = extrairValorNumericoBruto(pesoBruto);
+
           // Converter peso para quilogramas
           const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
 
@@ -519,6 +564,11 @@ function lerPeso(
               'Peso inválido recebido em modo contínuo (formato alternativo), ignorando...'
             );
             return; // Não resolver, continuar esperando
+          }
+
+          // Enviar peso numérico bruto para a WebView
+          if (pesoNumerico !== null) {
+            enviarPesoParaWebView(pesoNumerico);
           }
 
           dadosRecebidosModoContinuo = true;
@@ -693,12 +743,20 @@ function lerPeso(
         .replace(/[\x00-\x1F\x7F]/g, '')
         .trim();
 
+      // Extrair valor numérico bruto para enviar à WebView
+      const pesoNumerico = extrairValorNumericoBruto(pesoBruto);
+
       // Converter peso para quilogramas
       const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
 
       if (pesoEmKg === null) {
         console.log('Peso inválido recebido do parser no onData, ignorando...');
         return; // Não resolver, continuar esperando
+      }
+
+      // Enviar peso numérico bruto para a WebView
+      if (pesoNumerico !== null) {
+        enviarPesoParaWebView(pesoNumerico);
       }
 
       dadosRecebidos = true;
