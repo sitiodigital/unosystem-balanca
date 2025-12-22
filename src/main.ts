@@ -161,6 +161,16 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
         ) {
           const pesoBruto = processarRespostaToledo(data);
           if (pesoBruto) {
+            // Verificar se é uma resposta de status/erro (ex: "NNNNN")
+            // Essas respostas indicam que a balança não está pronta ou estável
+            if (pesoBruto.match(/^[Nn]+$/) || pesoBruto.match(/^[Ee]+$/)) {
+              console.log(
+                `Resposta de status/erro recebida: "${pesoBruto}" - Balança pode não estar estável ou pronta. Aguardando estabilização...`
+              );
+              // Não processar como peso válido, apenas logar
+              return;
+            }
+
             // Extrair valor numérico bruto para enviar à WebView
             const pesoNumerico = extrairValorNumericoBruto(pesoBruto);
 
@@ -207,6 +217,16 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
           'Peso recebido (parser) - Hex:',
           Buffer.from(pesoBruto, 'utf8').toString('hex')
         );
+
+        // Verificar se é uma resposta de status/erro (ex: "NNNNN")
+        // Essas respostas indicam que a balança não está pronta ou estável
+        if (pesoBruto.match(/^[Nn]+$/) || pesoBruto.match(/^[Ee]+$/)) {
+          console.log(
+            `Resposta de status/erro recebida: "${pesoBruto}" - Balança pode não estar estável ou pronta. Aguardando estabilização...`
+          );
+          // Não processar como peso válido, apenas logar
+          return;
+        }
 
         // Extrair valor numérico bruto para enviar à WebView
         const pesoNumerico = extrairValorNumericoBruto(pesoBruto);
@@ -415,7 +435,8 @@ function processarRespostaToledo(data: string | Buffer): string {
 
 function lerPeso(
   timeout: number = 10000,
-  tentarComandos: boolean = true
+  tentarComandos: boolean = true,
+  maxTentativas: number = 3
 ): Promise<string> {
   return new Promise(async (resolve, reject) => {
     if (!parser || !serialPort || !serialPort.isOpen) {
@@ -512,6 +533,14 @@ function lerPeso(
       ) {
         const pesoBruto = processarRespostaToledo(buffer);
         if (pesoBruto && pesoBruto.length > 0) {
+          // Verificar se é uma resposta de status/erro (ex: "NNNNN")
+          if (pesoBruto.match(/^[Nn]+$/) || pesoBruto.match(/^[Ee]+$/)) {
+            console.log(
+              `Resposta de status/erro recebida em modo contínuo: "${pesoBruto}" - Continuando a aguardar peso válido...`
+            );
+            return; // Não resolver, continuar esperando
+          }
+
           // Extrair valor numérico bruto para enviar à WebView
           const pesoNumerico = extrairValorNumericoBruto(pesoBruto);
 
@@ -553,6 +582,14 @@ function lerPeso(
             ? data.trim()
             : buffer.toString('utf8').trim();
         if (pesoBruto && pesoBruto.length > 0) {
+          // Verificar se é uma resposta de status/erro (ex: "NNNNN")
+          if (pesoBruto.match(/^[Nn]+$/) || pesoBruto.match(/^[Ee]+$/)) {
+            console.log(
+              `Resposta de status/erro recebida em modo contínuo (formato alternativo): "${pesoBruto}" - Continuando a aguardar peso válido...`
+            );
+            return; // Não resolver, continuar esperando
+          }
+
           // Extrair valor numérico bruto para enviar à WebView
           const pesoNumerico = extrairValorNumericoBruto(pesoBruto);
 
@@ -601,7 +638,7 @@ function lerPeso(
 
     // Se tentarComandos for true, tentar diferentes formatos de comando Toledo
     if (tentarComandos) {
-      // Aguardar um pouco antes de enviar comandos
+      // Aguardar um pouco antes de enviar comandos para dar tempo da balança estabilizar
       await new Promise((r) => setTimeout(r, 2500));
 
       if (dadosRecebidosModoContinuo || pesoResolvido) {
@@ -640,9 +677,9 @@ function lerPeso(
           );
           try {
             await enviarComando(cmd);
-            // Aguardar resposta antes de tentar próximo comando
-            // Reduzir tempo de espera para resposta mais rápida
-            await new Promise((r) => setTimeout(r, 800));
+            // Aguardar mais tempo após cada comando para dar tempo da balança processar
+            // e estabilizar (especialmente importante quando recebe "NNNNN")
+            await new Promise((r) => setTimeout(r, 1500));
 
             // Verificar novamente se recebeu resposta após aguardar
             if (pesoResolvido || dadosRecebidosModoContinuo) {
@@ -743,6 +780,14 @@ function lerPeso(
         .replace(/[\x00-\x1F\x7F]/g, '')
         .trim();
 
+      // Verificar se é uma resposta de status/erro (ex: "NNNNN")
+      if (pesoBruto.match(/^[Nn]+$/) || pesoBruto.match(/^[Ee]+$/)) {
+        console.log(
+          `Resposta de status/erro recebida no onData: "${pesoBruto}" - Continuando a aguardar peso válido...`
+        );
+        return; // Não resolver, continuar esperando
+      }
+
       // Extrair valor numérico bruto para enviar à WebView
       const pesoNumerico = extrairValorNumericoBruto(pesoBruto);
 
@@ -803,13 +848,15 @@ ipcMain.handle('testar-conexao', async (_, config: SerialConfig) => {
     console.log('Iniciando teste de conexão...');
     await abrirConexaoSerial(config);
 
-    // Aguardar um pouco mais para garantir que a conexão está estável
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    // Aguardar mais tempo para garantir que a conexão está estável
+    // Balanças Toledo podem precisar de mais tempo para estabilizar após conexão
+    console.log('Aguardando estabilização da balança (2 segundos)...');
+    await new Promise((resolve) => setTimeout(resolve, 2000));
 
     console.log('Tentando ler peso da balança Toledo...');
     // Toledo pode funcionar em modo contínuo ou com comandos
-    // Timeout aumentado para 10 segundos para dar tempo da balança responder
-    const peso = await lerPeso(10000, true);
+    // Timeout aumentado para 15 segundos para dar tempo da balança estabilizar e responder
+    const peso = await lerPeso(15000, true);
 
     console.log('Peso lido com sucesso:', peso);
 
