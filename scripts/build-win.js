@@ -1,4 +1,4 @@
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const path = require('path');
 
 console.log('📦 Preparando ambiente para build Windows...\n');
@@ -24,6 +24,15 @@ const env = {
   npm_config_build_from_source: 'false',
   ElectronRebuild_disable: 'true',
 };
+
+// Converter PNG para ICO antes do build
+console.log('🔄 Convertendo ícone PNG para ICO...\n');
+try {
+  execSync('node scripts/convert-icon.js', { stdio: 'inherit', cwd: path.join(__dirname, '..') });
+} catch (error) {
+  console.error('❌ Erro ao converter ícone:', error.message);
+  process.exit(1);
+}
 
 console.log('✅ Configurações aplicadas. Executando electron-builder...\n');
 
