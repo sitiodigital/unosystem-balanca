@@ -51,7 +51,7 @@
           ]
         }
       ],
-      "icon": "assets/icon.ico"
+      "icon": "assets/512x512.png"
     },
     "mac": {
       "icon": "assets/apple.png",
@@ -65,9 +65,9 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "installerIcon": "assets/icon.ico",
-      "uninstallerIcon": "assets/icon.ico",
-      "installerHeaderIcon": "assets/icon.ico"
+      "installerIcon": "assets/512x512.png",
+      "uninstallerIcon": "assets/512x512.png",
+      "installerHeaderIcon": "assets/512x512.png"
     },
     "nodeGypRebuild": false,
     "npmRebuild": false,
