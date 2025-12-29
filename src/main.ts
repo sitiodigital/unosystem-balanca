@@ -14,6 +14,10 @@ let callbackPesoRecebido: ((peso: string) => void) | null = null;
 let messageChannelInicializado: boolean = false;
 // Cache do comando que funciona (para leituras rápidas)
 let comandoFuncionando: string | Buffer | null = null;
+// Flag para controlar se há instrução explícita de abrir tela inicial
+let deveAbrirTelaInicial: boolean = false;
+// Flag global para controlar se a janela principal pode ser mostrada
+let podeMostrarJanelaPrincipal: boolean = false;
 
 interface SerialConfig {
   port: string;
@@ -24,11 +28,17 @@ interface SerialConfig {
 }
 
 function createWindow() {
+  // Resetar flag quando criar nova janela (a menos que seja por instrução explícita)
+  if (!deveAbrirTelaInicial) {
+    podeMostrarJanelaPrincipal = false;
+  }
+
   mainWindow = new BrowserWindow({
     width: 800,
     height: 700,
     fullscreen: true, // Abrir em tela cheia
     autoHideMenuBar: true, // Esconder barra de menu automaticamente
+    show: false, // Não mostrar inicialmente - será mostrada apenas se necessário
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -48,11 +58,69 @@ function createWindow() {
   mainWindow.on('focus', () => {
     mainWindow?.setMenuBarVisibility(false);
   });
+
+  // Quando a janela principal carregar, verificar se deve redirecionar automaticamente
+  mainWindow.webContents.on('did-finish-load', async () => {
+    console.log(
+      'Janela principal carregada, verificando se deve redirecionar...'
+    );
+
+    // Se há instrução explícita de abrir tela inicial, não redirecionar
+    if (deveAbrirTelaInicial) {
+      console.log(
+        'Instrução explícita detectada no carregamento, permitindo mostrar janela principal'
+      );
+      podeMostrarJanelaPrincipal = true;
+      deveAbrirTelaInicial = false; // Resetar após usar
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show();
+        mainWindow.setFullScreen(true);
+        mainWindow.focus();
+      }
+      return;
+    }
+
+    const redirecionou = await verificarERedirecionarAutomaticamente();
+    // Se redirecionou automaticamente, manter a janela oculta
+    if (redirecionou) {
+      // Garantir que a janela principal permaneça oculta
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.hide();
+      }
+      console.log(
+        'Redirecionamento automático realizado, mantendo janela principal oculta'
+      );
+    } else {
+      // Se não redirecionou, permitir mostrar a janela principal
+      podeMostrarJanelaPrincipal = true;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show();
+        mainWindow.setFullScreen(true);
+        mainWindow.focus();
+        console.log('Mostrando janela principal para preenchimento de dados');
+      }
+    }
+  });
+
+  // Prevenir que a janela seja mostrada antes da verificação
+  mainWindow.on('show', () => {
+    if (
+      !podeMostrarJanelaPrincipal &&
+      mainWindow &&
+      !mainWindow.isDestroyed()
+    ) {
+      console.log(
+        'Tentativa de mostrar janela principal bloqueada (aguardando verificação)'
+      );
+      mainWindow.hide();
+    }
+  });
 }
 
 function criarWebView(enderecoSistema: string) {
   if (webViewWindow) {
     webViewWindow.focus();
+    webViewWindow.show();
     return;
   }
 
@@ -61,6 +129,7 @@ function criarWebView(enderecoSistema: string) {
     height: 800,
     fullscreen: true, // Abrir em tela cheia
     autoHideMenuBar: true, // Esconder barra de menu automaticamente
+    show: true, // Garantir que a janela seja exibida
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -73,7 +142,27 @@ function criarWebView(enderecoSistema: string) {
   // Remover menu completamente
   webViewWindow.setMenuBarVisibility(false);
 
+  // Garantir que a WebView seja exibida e focada
+  webViewWindow.show();
+  webViewWindow.focus();
+
+  // Ocultar janela principal quando WebView for criada
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.hide();
+    console.log('Janela principal ocultada ao criar WebView');
+  }
+
+  console.log('Criando WebView com endereço:', enderecoSistema);
   webViewWindow.loadURL(enderecoSistema);
+
+  // Garantir que a WebView seja exibida quando estiver pronta
+  webViewWindow.once('ready-to-show', () => {
+    if (webViewWindow && !webViewWindow.isDestroyed()) {
+      webViewWindow.show();
+      webViewWindow.focus();
+      console.log('WebView pronta e exibida');
+    }
+  });
 
   // Resetar flag quando criar nova WebView
   messageChannelInicializado = false;
@@ -375,6 +464,9 @@ function configurarEscutaNavegacao(): void {
       .then((existe) => {
         if (existe) {
           console.log('Solicitação para abrir tela inicial detectada');
+          // Definir flags para indicar que há instrução explícita de abrir tela inicial
+          deveAbrirTelaInicial = true;
+          podeMostrarJanelaPrincipal = true;
           // Abrir/focar janela principal
           if (mainWindow) {
             if (mainWindow.isDestroyed()) {
@@ -382,8 +474,9 @@ function configurarEscutaNavegacao(): void {
               createWindow();
             } else {
               console.log('Focando janela principal existente');
-              mainWindow.focus();
               mainWindow.show();
+              mainWindow.setFullScreen(true);
+              mainWindow.focus();
             }
           } else {
             console.log('Criando janela principal (não existe)');
@@ -1422,6 +1515,146 @@ function lerPeso(
   });
 }
 
+// Interface para os dados salvos no localStorage
+interface SavedConfig {
+  enderecoSistema: string;
+  portaSerial: string;
+  baudRate: string;
+  dataBits: string;
+  parity: string;
+  stopBits: string;
+}
+
+// Função para verificar se os dados obrigatórios estão preenchidos
+function verificarDadosObrigatoriosPreenchidos(
+  config: SavedConfig | null
+): boolean {
+  if (!config) {
+    return false;
+  }
+
+  // Verificar se todos os campos obrigatórios estão preenchidos
+  const camposObrigatorios = [
+    config.enderecoSistema,
+    config.portaSerial,
+    config.baudRate,
+    config.dataBits,
+    config.parity,
+    config.stopBits,
+  ];
+
+  // Verificar se todos os campos estão preenchidos e não são strings vazias
+  const todosPreenchidos = camposObrigatorios.every(
+    (campo) => campo && campo.trim().length > 0
+  );
+
+  // Verificar se o endereço do sistema é válido (deve começar com http:// ou https://)
+  const enderecoValido =
+    !!config.enderecoSistema &&
+    (config.enderecoSistema.startsWith('http://') ||
+      config.enderecoSistema.startsWith('https://'));
+
+  return todosPreenchidos && enderecoValido;
+}
+
+// Função para obter configuração salva do renderer
+async function obterConfiguracaoSalva(): Promise<SavedConfig | null> {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return null;
+  }
+
+  try {
+    const config = await mainWindow.webContents.executeJavaScript(`
+      (function() {
+        try {
+          const saved = localStorage.getItem('balanca_config');
+          if (saved) {
+            return JSON.parse(saved);
+          }
+        } catch (error) {
+          console.error('Erro ao carregar configuração:', error);
+        }
+        return null;
+      })();
+    `);
+    return config;
+  } catch (error) {
+    console.error('Erro ao obter configuração salva:', error);
+    return null;
+  }
+}
+
+// Função para verificar e redirecionar automaticamente para WebView
+// Retorna true se redirecionou, false caso contrário
+async function verificarERedirecionarAutomaticamente(): Promise<boolean> {
+  // Não redirecionar se houver instrução explícita de abrir tela inicial
+  if (deveAbrirTelaInicial) {
+    console.log(
+      'Instrução explícita de abrir tela inicial detectada em verificarERedirecionarAutomaticamente, não redirecionando automaticamente'
+    );
+    // NÃO resetar a flag aqui, pois ela será usada no did-finish-load
+    return false;
+  }
+
+  // Obter configuração salva
+  const config = await obterConfiguracaoSalva();
+
+  // Verificar se existe endereço do sistema salvo
+  if (!config || !config.enderecoSistema) {
+    console.log(
+      'Nenhum endereço do sistema salvo encontrado, não redirecionando'
+    );
+    return false;
+  }
+
+  // Verificar se todos os dados obrigatórios estão preenchidos
+  if (!verificarDadosObrigatoriosPreenchidos(config)) {
+    console.log(
+      'Dados obrigatórios não estão completamente preenchidos, não redirecionando'
+    );
+    return false;
+  }
+
+  console.log(
+    'Configuração válida encontrada, redirecionando automaticamente para WebView...'
+  );
+
+  // Converter configuração para SerialConfig
+  const serialConfig: SerialConfig = {
+    port: config.portaSerial,
+    baudRate: parseInt(config.baudRate),
+    dataBits: parseInt(config.dataBits) as 7 | 8,
+    parity: config.parity as 'none' | 'even' | 'odd',
+    stopBits: parseInt(config.stopBits) as 1 | 2,
+  };
+
+  try {
+    // Ocultar janela principal antes de criar WebView
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.hide();
+      console.log('Janela principal ocultada antes de criar WebView');
+    }
+
+    // Abrir conexão serial
+    await abrirConexaoSerial(serialConfig);
+
+    // Criar WebView
+    criarWebView(config.enderecoSistema);
+
+    console.log('WebView criada e exibida com sucesso');
+    return true; // Redirecionou com sucesso
+  } catch (error: any) {
+    console.error('Erro ao redirecionar automaticamente:', error);
+    // Se houver erro, mostrar a janela principal novamente
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+    // Não fechar conexão serial aqui, pois pode não ter sido aberta
+    return false;
+  }
+}
+
 // IPC Handlers
 ipcMain.handle('listar-portas', async () => {
   try {
@@ -1483,6 +1716,11 @@ ipcMain.handle(
       // Criar WebView
       criarWebView(enderecoSistema);
 
+      // Ocultar a janela principal após conectar com sucesso
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.hide();
+      }
+
       return { sucesso: true };
     } catch (error: any) {
       fecharConexaoSerial();
@@ -1497,15 +1735,23 @@ ipcMain.handle(
 // Handler para focar/abrir a janela principal quando solicitado da WebView
 ipcMain.handle('abrir-tela-inicial', async () => {
   try {
+    // Definir flags para indicar que há instrução explícita de abrir tela inicial
+    deveAbrirTelaInicial = true;
+    podeMostrarJanelaPrincipal = true;
+    console.log(
+      'Handler abrir-tela-inicial chamado, definindo flags para permitir exibição'
+    );
+
     if (mainWindow) {
       if (mainWindow.isDestroyed()) {
         createWindow();
       } else {
-        mainWindow.focus();
-        mainWindow.show();
         // Garantir fullscreen e sem menu
         mainWindow.setFullScreen(true);
         mainWindow.setMenuBarVisibility(false);
+        mainWindow.show();
+        mainWindow.focus();
+        console.log('Janela principal exibida via handler');
       }
     } else {
       createWindow();
