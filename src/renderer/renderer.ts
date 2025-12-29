@@ -56,7 +56,9 @@ interface SavedConfig {
 // Função para salvar configuração no localStorage
 function salvarConfiguracao() {
   const config: SavedConfig = {
-    enderecoSistema: (document.getElementById('enderecoSistema') as HTMLInputElement).value.trim(),
+    enderecoSistema: (
+      document.getElementById('enderecoSistema') as HTMLInputElement
+    ).value.trim(),
     portaSerial: portaSerialSelect.value,
     baudRate: (document.getElementById('baudRate') as HTMLSelectElement).value,
     dataBits: (document.getElementById('dataBits') as HTMLSelectElement).value,
@@ -90,7 +92,9 @@ function carregarConfiguracao(): SavedConfig | null {
 // Função para preencher formulário com dados salvos
 function preencherFormulario(config: SavedConfig) {
   // Preencher endereço do sistema
-  const enderecoInput = document.getElementById('enderecoSistema') as HTMLInputElement;
+  const enderecoInput = document.getElementById(
+    'enderecoSistema'
+  ) as HTMLInputElement;
   if (enderecoInput && config.enderecoSistema) {
     enderecoInput.value = config.enderecoSistema;
   }
@@ -99,12 +103,16 @@ function preencherFormulario(config: SavedConfig) {
   // após as portas serem carregadas, para garantir que a porta existe
 
   // Preencher outros campos
-  const baudRateSelect = document.getElementById('baudRate') as HTMLSelectElement;
+  const baudRateSelect = document.getElementById(
+    'baudRate'
+  ) as HTMLSelectElement;
   if (baudRateSelect && config.baudRate) {
     baudRateSelect.value = config.baudRate;
   }
 
-  const dataBitsSelect = document.getElementById('dataBits') as HTMLSelectElement;
+  const dataBitsSelect = document.getElementById(
+    'dataBits'
+  ) as HTMLSelectElement;
   if (dataBitsSelect && config.dataBits) {
     dataBitsSelect.value = config.dataBits;
   }
@@ -114,7 +122,9 @@ function preencherFormulario(config: SavedConfig) {
     paritySelect.value = config.parity;
   }
 
-  const stopBitsSelect = document.getElementById('stopBits') as HTMLSelectElement;
+  const stopBitsSelect = document.getElementById(
+    'stopBits'
+  ) as HTMLSelectElement;
   if (stopBitsSelect && config.stopBits) {
     stopBitsSelect.value = config.stopBits;
   }
@@ -193,7 +203,9 @@ async function carregarPortas() {
     const savedConfig = carregarConfiguracao();
     if (savedConfig && savedConfig.portaSerial) {
       // Verificar se a porta salva ainda existe na lista
-      const portaExiste = portas.some(p => p.path === savedConfig.portaSerial);
+      const portaExiste = portas.some(
+        (p) => p.path === savedConfig.portaSerial
+      );
       if (portaExiste) {
         portaSerialSelect.value = savedConfig.portaSerial;
       }
@@ -280,7 +292,7 @@ form.addEventListener('submit', async (e) => {
     if (resultado.sucesso) {
       // Salvar configuração no localStorage quando conectar com sucesso
       salvarConfiguracao();
-      
+
       mostrarMensagem(
         'Conectado com sucesso! A WebView será aberta em breve.',
         'success'
@@ -301,14 +313,34 @@ form.addEventListener('submit', async (e) => {
   }
 });
 
-// Carregar configuração salva ao iniciar
-const savedConfig = carregarConfiguracao();
-if (savedConfig) {
-  preencherFormulario(savedConfig);
+// Aguardar DOM estar pronto antes de carregar dados
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', inicializarAplicacao);
+} else {
+  // DOM já está pronto
+  inicializarAplicacao();
 }
 
-// Carregar portas ao iniciar
-carregarPortas();
+function inicializarAplicacao() {
+  console.log('Inicializando aplicação...');
+
+  // Carregar configuração salva ao iniciar
+  const savedConfig = carregarConfiguracao();
+  if (savedConfig) {
+    console.log(
+      'Configuração encontrada, preenchendo formulário:',
+      savedConfig
+    );
+    preencherFormulario(savedConfig);
+  } else {
+    console.log('Nenhuma configuração salva encontrada');
+  }
+
+  // Carregar portas ao iniciar (após um pequeno delay para garantir que o formulário foi preenchido)
+  setTimeout(() => {
+    carregarPortas();
+  }, 100);
+}
 
 // Capturar tecla ESC para sair do modo fullscreen
 document.addEventListener('keydown', async (event) => {
@@ -316,7 +348,7 @@ document.addEventListener('keydown', async (event) => {
   if (event.key === 'Escape' || event.keyCode === 27) {
     // Prevenir comportamento padrão (não sair do fullscreen automaticamente)
     event.preventDefault();
-    
+
     // Sair do modo fullscreen via IPC
     if (window.balanca && typeof window.balanca.sairFullscreen === 'function') {
       try {

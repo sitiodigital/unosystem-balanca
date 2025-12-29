@@ -706,20 +706,43 @@ function lerPesoRapido(
   });
 }
 
-function fecharConexaoSerial() {
-  if (parser) {
-    parser.removeAllListeners();
-    parser = null;
-  }
-  if (serialPort && serialPort.isOpen) {
-    serialPort.close();
-  }
-  serialPort = null;
+function fecharConexaoSerial(): Promise<void> {
+  return new Promise((resolve) => {
+    if (parser) {
+      parser.removeAllListeners();
+      parser = null;
+    }
+
+    if (serialPort) {
+      if (serialPort.isOpen) {
+        console.log('Fechando porta serial:', serialPort.path);
+        serialPort.close((err) => {
+          if (err) {
+            console.error('Erro ao fechar porta serial:', err);
+          } else {
+            console.log('Porta serial fechada com sucesso');
+          }
+          serialPort = null;
+          // Aguardar um pouco para garantir que a porta foi liberada
+          setTimeout(() => resolve(), 100);
+        });
+      } else {
+        serialPort = null;
+        resolve();
+      }
+    } else {
+      resolve();
+    }
+  });
 }
 
 function abrirConexaoSerial(config: SerialConfig): Promise<void> {
-  return new Promise((resolve, reject) => {
-    fecharConexaoSerial();
+  return new Promise(async (resolve, reject) => {
+    // Fechar conexão anterior antes de abrir nova
+    await fecharConexaoSerial();
+
+    // Aguardar um pouco mais para garantir que a porta foi completamente liberada
+    await new Promise((r) => setTimeout(r, 200));
 
     console.log('Abrindo conexão serial com configuração:', config);
 
@@ -743,10 +766,39 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
       console.error('Erro na porta serial:', err);
     });
 
-    serialPort.open((err) => {
+    serialPort.open(async (err) => {
       if (err) {
         console.error('Erro ao abrir porta serial:', err);
-        reject(err);
+        // Se for erro de acesso negado, tentar fechar novamente e aguardar mais
+        if (
+          err.message &&
+          (err.message.includes('Access Denied') ||
+            err.message.includes('EACCES'))
+        ) {
+          console.log(
+            'Erro Access Denied detectado, tentando fechar porta novamente...'
+          );
+          try {
+            await fecharConexaoSerial();
+            // Aguardar mais tempo antes de rejeitar
+            await new Promise((r) => setTimeout(r, 500));
+            reject(
+              new Error(
+                `Porta ${config.port} está em uso ou não foi liberada corretamente. Tente novamente em alguns segundos.`
+              )
+            );
+          } catch (closeErr: any) {
+            reject(
+              new Error(
+                `Erro ao fechar porta serial: ${
+                  closeErr?.message || closeErr
+                }. A porta pode estar em uso.`
+              )
+            );
+          }
+        } else {
+          reject(err);
+        }
         return;
       }
 
@@ -1564,12 +1616,17 @@ async function obterConfiguracaoSalva(): Promise<SavedConfig | null> {
   }
 
   try {
+    // Aguardar um pouco para garantir que o DOM e localStorage estejam prontos
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
     const config = await mainWindow.webContents.executeJavaScript(`
       (function() {
         try {
           const saved = localStorage.getItem('balanca_config');
           if (saved) {
-            return JSON.parse(saved);
+            const parsed = JSON.parse(saved);
+            console.log('Configuração obtida do localStorage:', parsed);
+            return parsed;
           }
         } catch (error) {
           console.error('Erro ao carregar configuração:', error);
@@ -1686,11 +1743,11 @@ ipcMain.handle('testar-conexao', async (_, config: SerialConfig) => {
 
     console.log('Peso lido com sucesso:', peso);
 
-    fecharConexaoSerial();
+    await fecharConexaoSerial();
     return { sucesso: true, peso };
   } catch (error: any) {
     console.error('Erro ao testar conexão:', error);
-    fecharConexaoSerial();
+    await fecharConexaoSerial();
     return {
       sucesso: false,
       erro: error.message || 'Erro desconhecido ao testar conexão',
@@ -1723,7 +1780,7 @@ ipcMain.handle(
 
       return { sucesso: true };
     } catch (error: any) {
-      fecharConexaoSerial();
+      await fecharConexaoSerial();
       return {
         sucesso: false,
         erro: error.message || 'Erro ao conectar balança',
@@ -1784,8 +1841,8 @@ app.whenReady().then(() => {
 
   createWindow();
 
-  app.on('window-all-closed', () => {
-    fecharConexaoSerial();
+  app.on('window-all-closed', async () => {
+    await fecharConexaoSerial();
     if (process.platform !== 'darwin') {
       app.quit();
     }
@@ -1800,6 +1857,11 @@ app.whenReady().then(() => {
   // Prevenir que o menu apareça - os listeners individuais nas janelas já cuidam disso
 });
 
-app.on('before-quit', () => {
-  fecharConexaoSerial();
+app.on('before-quit', async (event) => {
+  // Prevenir saída imediata para garantir que a porta seja fechada
+  event.preventDefault();
+  await fecharConexaoSerial();
+  // Aguardar um pouco para garantir que tudo foi fechado
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  app.exit(0);
 });
