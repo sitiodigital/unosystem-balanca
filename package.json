@@ -35,7 +35,7 @@
   },
   "build": {
     "appId": "com.unosystem.balanca",
-    "productName": "Balança UnoSystem",
+    "productName": "UnoSystem",
     "directories": {
       "output": "dist_electron",
       "buildResources": "assets"
