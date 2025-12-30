@@ -374,7 +374,7 @@ document.addEventListener('keydown', async (event) => {
 const originalWindowClose = window.close;
 window.close = function () {
   console.log('window.close() chamado, usando fechamento seguro via IPC');
-  
+
   // Se a função fecharApp estiver disponível, usá-la
   if (window.balanca && typeof window.balanca.fecharApp === 'function') {
     window.balanca.fecharApp().catch((error) => {
