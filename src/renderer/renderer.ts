@@ -14,6 +14,7 @@ declare global {
       onPeso: (callback: (peso: string) => void) => void;
       removerListenerPeso: () => void;
       sairFullscreen: () => Promise<{ sucesso: boolean; erro?: string }>;
+      fecharApp: () => Promise<{ sucesso: boolean; erro?: string }>;
     };
   }
 
@@ -364,5 +365,28 @@ document.addEventListener('keydown', async (event) => {
     }
   }
 });
+
+/**
+ * Interceptar window.close() para garantir que o app seja encerrado corretamente
+ * Ao invés de apenas fechar a janela (que pode deixar processos ativos),
+ * vamos usar a função IPC que garante limpeza completa de todos os recursos
+ */
+const originalWindowClose = window.close;
+window.close = function () {
+  console.log('window.close() chamado, usando fechamento seguro via IPC');
+  
+  // Se a função fecharApp estiver disponível, usá-la
+  if (window.balanca && typeof window.balanca.fecharApp === 'function') {
+    window.balanca.fecharApp().catch((error) => {
+      console.error('Erro ao fechar app via IPC:', error);
+      // Fallback: tentar fechar janela normalmente
+      originalWindowClose.call(window);
+    });
+  } else {
+    // Fallback: se IPC não estiver disponível, usar fechamento normal
+    console.warn('IPC fecharApp não disponível, usando window.close() normal');
+    originalWindowClose.call(window);
+  }
+};
 
 export {};

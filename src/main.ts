@@ -18,6 +18,12 @@ let comandoFuncionando: string | Buffer | null = null;
 let deveAbrirTelaInicial: boolean = false;
 // Flag global para controlar se a janela principal pode ser mostrada
 let podeMostrarJanelaPrincipal: boolean = false;
+// Flag para controlar se o app está encerrando (evita loops infinitos)
+let isQuitting: boolean = false;
+// Armazenar IDs dos timers recursivos para poder cancelá-los durante o encerramento
+let timerVerificarSolicitacao: NodeJS.Timeout | null = null;
+let timerVerificarNavegacao: NodeJS.Timeout | null = null;
+let timerVerificarESC: NodeJS.Timeout | null = null;
 
 interface SerialConfig {
   port: string;
@@ -57,6 +63,24 @@ function createWindow() {
   // Prevenir que o menu apareça ao pressionar Alt
   mainWindow.on('focus', () => {
     mainWindow?.setMenuBarVisibility(false);
+  });
+
+  // Garantir que o fechamento da janela principal encerre o app completamente
+  // No macOS, o comportamento padrão é manter o app ativo após fechar a janela
+  // Vamos sobrescrever isso para garantir encerramento completo
+  mainWindow.on('close', async (event) => {
+    // Se não estiver encerrando ainda, iniciar processo de limpeza
+    if (!isQuitting) {
+      event.preventDefault(); // Prevenir fechamento imediato
+      console.log(
+        'Fechamento da janela principal detectado, iniciando encerramento...'
+      );
+      // Marcar que está encerrando para evitar loops
+      isQuitting = true;
+      // Chamar app.quit() que vai disparar before-quit e fazer a limpeza completa
+      // Não chamar limparRecursosCompletamente() aqui para evitar duplicação
+      app.quit();
+    }
   });
 
   // Quando a janela principal carregar, verificar se deve redirecionar automaticamente
@@ -188,6 +212,20 @@ function criarWebView(enderecoSistema: string) {
   // Prevenir que o menu apareça ao pressionar Alt
   webViewWindow.on('focus', () => {
     webViewWindow?.setMenuBarVisibility(false);
+  });
+
+  // Garantir que o fechamento da WebView também encerre o app completamente
+  webViewWindow.on('close', async (event) => {
+    // Se não estiver encerrando ainda, iniciar processo de limpeza
+    if (!isQuitting) {
+      event.preventDefault(); // Prevenir fechamento imediato
+      console.log('Fechamento da WebView detectado, iniciando encerramento...');
+      // Marcar que está encerrando para evitar loops
+      isQuitting = true;
+      // Chamar app.quit() que vai disparar before-quit e fazer a limpeza completa
+      // Não chamar limparRecursosCompletamente() aqui para evitar duplicação
+      app.quit();
+    }
   });
 
   webViewWindow.on('closed', () => {
@@ -355,7 +393,11 @@ function configurarEscutaSolicitacaoPeso(): void {
 
   // Verificar periodicamente de forma mais eficiente (a cada 50ms)
   const verificarSolicitacao = () => {
-    if (!webViewWindow || webViewWindow.isDestroyed()) return;
+    // Parar verificação se o app está encerrando ou a janela foi destruída
+    if (isQuitting || !webViewWindow || webViewWindow.isDestroyed()) {
+      timerVerificarSolicitacao = null;
+      return;
+    }
 
     webViewWindow.webContents
       .executeJavaScript(
@@ -364,19 +406,27 @@ function configurarEscutaSolicitacaoPeso(): void {
     `
       )
       .then((existe) => {
-        if (existe) {
+        if (existe && !isQuitting) {
           solicitarPesoParaWebView();
         }
-        // Continuar verificando
-        setTimeout(verificarSolicitacao, 50);
+        // Continuar verificando apenas se não estiver encerrando
+        if (!isQuitting) {
+          timerVerificarSolicitacao = setTimeout(verificarSolicitacao, 50);
+        } else {
+          timerVerificarSolicitacao = null;
+        }
       })
       .catch(() => {
-        setTimeout(verificarSolicitacao, 50);
+        if (!isQuitting) {
+          timerVerificarSolicitacao = setTimeout(verificarSolicitacao, 50);
+        } else {
+          timerVerificarSolicitacao = null;
+        }
       });
   };
 
   // Iniciar verificação após um pequeno delay
-  setTimeout(verificarSolicitacao, 500);
+  timerVerificarSolicitacao = setTimeout(verificarSolicitacao, 500);
 
   // Atualizar o listener do port2 para usar a função global
   webViewWindow.webContents
@@ -453,7 +503,11 @@ function configurarEscutaNavegacao(): void {
 
   // Verificar periodicamente se há solicitação para abrir tela inicial
   const verificarNavegacao = () => {
-    if (!webViewWindow || webViewWindow.isDestroyed()) return;
+    // Parar verificação se o app está encerrando ou a janela foi destruída
+    if (isQuitting || !webViewWindow || webViewWindow.isDestroyed()) {
+      timerVerificarNavegacao = null;
+      return;
+    }
 
     webViewWindow.webContents
       .executeJavaScript(
@@ -462,7 +516,7 @@ function configurarEscutaNavegacao(): void {
     `
       )
       .then((existe) => {
-        if (existe) {
+        if (existe && !isQuitting) {
           console.log('Solicitação para abrir tela inicial detectada');
           // Definir flags para indicar que há instrução explícita de abrir tela inicial
           deveAbrirTelaInicial = true;
@@ -483,17 +537,25 @@ function configurarEscutaNavegacao(): void {
             createWindow();
           }
         }
-        // Continuar verificando
-        setTimeout(verificarNavegacao, 100);
+        // Continuar verificando apenas se não estiver encerrando
+        if (!isQuitting) {
+          timerVerificarNavegacao = setTimeout(verificarNavegacao, 100);
+        } else {
+          timerVerificarNavegacao = null;
+        }
       })
       .catch((err) => {
         console.error('Erro ao verificar navegação:', err);
-        setTimeout(verificarNavegacao, 100);
+        if (!isQuitting) {
+          timerVerificarNavegacao = setTimeout(verificarNavegacao, 100);
+        } else {
+          timerVerificarNavegacao = null;
+        }
       });
   };
 
   // Iniciar verificação após um pequeno delay
-  setTimeout(verificarNavegacao, 500);
+  timerVerificarNavegacao = setTimeout(verificarNavegacao, 500);
 }
 
 // Função para configurar escuta de ESC na WebView para sair do fullscreen
@@ -553,7 +615,11 @@ function configurarEscutaESC(): void {
 
   // Verificar periodicamente se há solicitação para sair do fullscreen
   const verificarESC = () => {
-    if (!webViewWindow || webViewWindow.isDestroyed()) return;
+    // Parar verificação se o app está encerrando ou a janela foi destruída
+    if (isQuitting || !webViewWindow || webViewWindow.isDestroyed()) {
+      timerVerificarESC = null;
+      return;
+    }
 
     webViewWindow.webContents
       .executeJavaScript(
@@ -562,7 +628,7 @@ function configurarEscutaESC(): void {
     `
       )
       .then((existe) => {
-        if (existe) {
+        if (existe && !isQuitting) {
           console.log(
             'Solicitação para sair do fullscreen detectada na WebView'
           );
@@ -570,17 +636,25 @@ function configurarEscutaESC(): void {
             webViewWindow.setFullScreen(false);
           }
         }
-        // Continuar verificando
-        setTimeout(verificarESC, 100);
+        // Continuar verificando apenas se não estiver encerrando
+        if (!isQuitting) {
+          timerVerificarESC = setTimeout(verificarESC, 100);
+        } else {
+          timerVerificarESC = null;
+        }
       })
       .catch((err) => {
         console.error('Erro ao verificar ESC:', err);
-        setTimeout(verificarESC, 100);
+        if (!isQuitting) {
+          timerVerificarESC = setTimeout(verificarESC, 100);
+        } else {
+          timerVerificarESC = null;
+        }
       });
   };
 
   // Iniciar verificação após um pequeno delay
-  setTimeout(verificarESC, 500);
+  timerVerificarESC = setTimeout(verificarESC, 500);
 }
 
 // Função para solicitar peso da balança e enviar para WebView (otimizada para velocidade)
@@ -706,27 +780,56 @@ function lerPesoRapido(
   });
 }
 
+/**
+ * Fecha a conexão serial e remove todos os listeners
+ * Esta função garante que a porta serial seja completamente liberada
+ */
 function fecharConexaoSerial(): Promise<void> {
   return new Promise((resolve) => {
+    // Limpar callback de peso recebido
+    callbackPesoRecebido = null;
+
+    // Remover todos os listeners do parser antes de destruí-lo
     if (parser) {
-      parser.removeAllListeners();
+      try {
+        parser.removeAllListeners();
+        // Remover parser do pipe se ainda estiver conectado
+        if (serialPort && serialPort.isOpen) {
+          parser.unpipe();
+        }
+      } catch (err) {
+        console.error('Erro ao remover listeners do parser:', err);
+      }
       parser = null;
     }
 
+    // Fechar porta serial e remover todos os listeners
     if (serialPort) {
-      if (serialPort.isOpen) {
-        console.log('Fechando porta serial:', serialPort.path);
-        serialPort.close((err) => {
-          if (err) {
-            console.error('Erro ao fechar porta serial:', err);
-          } else {
-            console.log('Porta serial fechada com sucesso');
-          }
+      try {
+        // Remover todos os listeners antes de fechar
+        serialPort.removeAllListeners('data');
+        serialPort.removeAllListeners('error');
+        serialPort.removeAllListeners('open');
+        serialPort.removeAllListeners('close');
+
+        if (serialPort.isOpen) {
+          console.log('Fechando porta serial:', serialPort.path);
+          serialPort.close((err) => {
+            if (err) {
+              console.error('Erro ao fechar porta serial:', err);
+            } else {
+              console.log('Porta serial fechada com sucesso');
+            }
+            serialPort = null;
+            // Aguardar um pouco para garantir que a porta foi liberada
+            setTimeout(() => resolve(), 100);
+          });
+        } else {
           serialPort = null;
-          // Aguardar um pouco para garantir que a porta foi liberada
-          setTimeout(() => resolve(), 100);
-        });
-      } else {
+          resolve();
+        }
+      } catch (err) {
+        console.error('Erro ao fechar porta serial:', err);
         serialPort = null;
         resolve();
       }
@@ -734,6 +837,87 @@ function fecharConexaoSerial(): Promise<void> {
       resolve();
     }
   });
+}
+
+/**
+ * Função completa de limpeza que encerra todos os recursos do aplicativo
+ * Esta função garante que não haja processos zumbis após o fechamento
+ */
+async function limparRecursosCompletamente(): Promise<void> {
+  console.log('Iniciando limpeza completa de recursos...');
+
+  // Marcar que o app está encerrando (evita loops infinitos)
+  isQuitting = true;
+
+  // 1. Cancelar todos os timers recursivos
+  if (timerVerificarSolicitacao) {
+    clearTimeout(timerVerificarSolicitacao);
+    timerVerificarSolicitacao = null;
+    console.log('Timer verificarSolicitacao cancelado');
+  }
+  if (timerVerificarNavegacao) {
+    clearTimeout(timerVerificarNavegacao);
+    timerVerificarNavegacao = null;
+    console.log('Timer verificarNavegacao cancelado');
+  }
+  if (timerVerificarESC) {
+    clearTimeout(timerVerificarESC);
+    timerVerificarESC = null;
+    console.log('Timer verificarESC cancelado');
+  }
+
+  // 2. Fechar conexão serial (remove listeners e fecha porta)
+  await fecharConexaoSerial();
+
+  // 3. Remover todos os listeners IPC antes de fechar janelas
+  try {
+    ipcMain.removeAllListeners('listar-portas');
+    ipcMain.removeAllListeners('testar-conexao');
+    ipcMain.removeAllListeners('conectar-balanca');
+    ipcMain.removeAllListeners('abrir-tela-inicial');
+    ipcMain.removeAllListeners('sair-fullscreen');
+    ipcMain.removeAllListeners('app-quit');
+    console.log('Todos os listeners IPC removidos');
+  } catch (err) {
+    console.error('Erro ao remover listeners IPC:', err);
+  }
+
+  // 4. Fechar janela WebView se existir
+  if (webViewWindow && !webViewWindow.isDestroyed()) {
+    try {
+      // Remover todos os listeners da WebView antes de fechar
+      webViewWindow.removeAllListeners();
+      webViewWindow.webContents.removeAllListeners();
+      webViewWindow.close();
+      console.log('WebView fechada');
+    } catch (err) {
+      console.error('Erro ao fechar WebView:', err);
+    }
+    webViewWindow = null;
+  }
+
+  // 5. Fechar janela principal se existir
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      // Remover todos os listeners da janela principal antes de fechar
+      mainWindow.removeAllListeners();
+      mainWindow.webContents.removeAllListeners();
+      mainWindow.close();
+      console.log('Janela principal fechada');
+    } catch (err) {
+      console.error('Erro ao fechar janela principal:', err);
+    }
+    mainWindow = null;
+  }
+
+  // 6. Limpar variáveis globais
+  messageChannelInicializado = false;
+  comandoFuncionando = null;
+  deveAbrirTelaInicial = false;
+  podeMostrarJanelaPrincipal = false;
+  callbackPesoRecebido = null;
+
+  console.log('Limpeza completa de recursos finalizada');
 }
 
 function abrirConexaoSerial(config: SerialConfig): Promise<void> {
@@ -1835,21 +2019,53 @@ ipcMain.handle('sair-fullscreen', async () => {
   }
 });
 
+/**
+ * Handler IPC para permitir que o renderer solicite o fechamento do app
+ * Isso garante que window.close() no renderer acione app.quit() no main process
+ */
+ipcMain.handle('app-quit', async () => {
+  try {
+    console.log('Fechamento solicitado via IPC do renderer');
+    await limparRecursosCompletamente();
+    app.quit();
+    return { sucesso: true };
+  } catch (error: any) {
+    console.error('Erro ao encerrar app via IPC:', error);
+    // Mesmo com erro, tentar encerrar o app
+    app.quit();
+    return { sucesso: false, erro: error.message };
+  }
+});
+
 app.whenReady().then(() => {
   // Remover completamente o menu da aplicação
   Menu.setApplicationMenu(null);
 
   createWindow();
 
+  /**
+   * Evento window-all-closed: disparado quando todas as janelas são fechadas
+   * IMPORTANTE: No macOS, o comportamento padrão é manter o app ativo após fechar janelas
+   * Vamos sobrescrever isso para garantir encerramento completo em todas as plataformas
+   */
   app.on('window-all-closed', async () => {
-    await fecharConexaoSerial();
-    if (process.platform !== 'darwin') {
-      app.quit();
-    }
+    console.log('Todas as janelas foram fechadas');
+    // Limpar recursos antes de encerrar
+    await limparRecursosCompletamente();
+
+    // No macOS, o comportamento padrão é manter o app ativo após fechar janelas
+    // Vamos sobrescrever isso para garantir encerramento completo
+    // Isso evita processos zumbis no Monitor de Atividade
+    app.quit();
   });
 
+  /**
+   * Evento activate: disparado quando o app é ativado (macOS)
+   * Recria janela se não houver nenhuma aberta
+   */
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    // Só recriar janela se não estiver encerrando
+    if (!isQuitting && BrowserWindow.getAllWindows().length === 0) {
       createWindow();
     }
   });
@@ -1857,11 +2073,52 @@ app.whenReady().then(() => {
   // Prevenir que o menu apareça - os listeners individuais nas janelas já cuidam disso
 });
 
+/**
+ * Evento before-quit: disparado ANTES do app encerrar
+ * Este é o lugar ideal para garantir limpeza completa de recursos
+ * IMPORTANTE: Usar app.quit() ao invés de app.exit() para garantir encerramento correto
+ */
 app.on('before-quit', async (event) => {
-  // Prevenir saída imediata para garantir que a porta seja fechada
+  // Se já estiver encerrando, não fazer nada
+  if (isQuitting) {
+    return;
+  }
+
+  console.log('Evento before-quit disparado, iniciando limpeza completa...');
+
+  // Prevenir saída imediata para garantir que todos os recursos sejam limpos
   event.preventDefault();
-  await fecharConexaoSerial();
-  // Aguardar um pouco para garantir que tudo foi fechado
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  app.exit(0);
+
+  // Limpar todos os recursos
+  await limparRecursosCompletamente();
+
+  // Aguardar um pouco para garantir que tudo foi fechado completamente
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  // Usar app.quit() ao invés de app.exit(0) para garantir encerramento correto
+  // app.quit() respeita o ciclo de vida do Electron e garante que todos os processos sejam encerrados
+  app.quit();
+});
+
+/**
+ * Evento will-quit: disparado quando o app está prestes a encerrar
+ * Última chance de fazer limpeza antes do encerramento definitivo
+ */
+app.on('will-quit', (event) => {
+  console.log('Evento will-quit disparado');
+  // Garantir que isQuitting está marcado
+  isQuitting = true;
+});
+
+/**
+ * Evento quit: disparado quando o app encerra
+ * Útil para logging, mas não deve fazer operações assíncronas aqui
+ */
+app.on('quit', () => {
+  console.log('App encerrado completamente');
+  // Forçar saída do processo principal após um timeout de segurança
+  // Isso garante que mesmo se algo der errado, o processo será encerrado
+  setTimeout(() => {
+    process.exit(0);
+  }, 1000);
 });

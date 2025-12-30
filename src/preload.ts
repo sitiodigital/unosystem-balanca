@@ -34,4 +34,9 @@ contextBridge.exposeInMainWorld('balanca', {
 
   // Sair do modo fullscreen
   sairFullscreen: () => ipcRenderer.invoke('sair-fullscreen'),
+
+  // Fechar aplicativo completamente (garante limpeza de todos os recursos)
+  // Esta função deve ser usada ao invés de window.close() para garantir
+  // que todos os processos sejam encerrados corretamente
+  fecharApp: () => ipcRenderer.invoke('app-quit'),
 });
