@@ -45,8 +45,6 @@ function createWindow() {
     fullscreen: true, // Abrir em tela cheia
     autoHideMenuBar: true, // Esconder barra de menu automaticamente
     show: false, // Não mostrar inicialmente - será mostrada apenas se necessário
-    useContentSize: true, // Usa o tamanho do conteúdo ao invés da janela (evita barras de rolagem)
-    enableLargerThanScreen: false, // Impede que a janela seja maior que a tela
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -156,8 +154,6 @@ function criarWebView(enderecoSistema: string) {
     fullscreen: true, // Abrir em tela cheia
     autoHideMenuBar: true, // Esconder barra de menu automaticamente
     show: true, // Garantir que a janela seja exibida
-    useContentSize: true, // Usa o tamanho do conteúdo ao invés da janela (evita barras de rolagem)
-    enableLargerThanScreen: false, // Impede que a janela seja maior que a tela
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -202,8 +198,6 @@ function criarWebView(enderecoSistema: string) {
     // Aguardar um pouco para garantir que o JavaScript da página foi executado
     // e que o listener window.addEventListener('message') já está registrado
     setTimeout(() => {
-      // Injetar CSS para evitar barras de rolagem indesejadas na WebView
-      injetarCSSWebView();
       // Configurar escuta de solicitação de peso PRIMEIRO (cria função global)
       configurarEscutaSolicitacaoPeso();
       // Depois inicializar MessageChannel (que usará a função global)
@@ -452,54 +446,6 @@ function configurarEscutaSolicitacaoPeso(): void {
   `
     )
     .catch(() => {});
-}
-
-// Função para injetar CSS na WebView para evitar barras de rolagem indesejadas
-function injetarCSSWebView(): void {
-  if (!webViewWindow || webViewWindow.isDestroyed()) {
-    return;
-  }
-
-  console.log(
-    'Injetando CSS na WebView para evitar barras de rolagem indesejadas'
-  );
-
-  // Injetar CSS que remove barras de rolagem do body/html, mas mantém em elementos específicos
-  webViewWindow.webContents
-    .insertCSS(
-      `
-    /* Remover barras de rolagem do body e html quando em fullscreen */
-    html, body {
-      overflow: hidden !important;
-      height: 100% !important;
-      width: 100% !important;
-      margin: 0 !important;
-      padding: 0 !important;
-    }
-    
-    /* Permitir rolagem apenas em elementos específicos que precisam (como modais, tabelas, etc) */
-    .modal-body,
-    .table-responsive,
-    .dataTables_wrapper,
-    [class*="scroll"],
-    [class*="overflow"] {
-      overflow-y: auto !important;
-      overflow-x: auto !important;
-    }
-    
-    /* Garantir que o conteúdo principal ocupe toda a tela */
-    body > *:first-child {
-      height: 100vh !important;
-      overflow-y: auto !important;
-    }
-  `
-    )
-    .then(() => {
-      console.log('CSS injetado com sucesso na WebView');
-    })
-    .catch((err) => {
-      console.error('Erro ao injetar CSS na WebView:', err);
-    });
 }
 
 // Função para configurar escuta de mensagens de navegação da WebView
