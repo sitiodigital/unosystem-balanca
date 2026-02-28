@@ -5,16 +5,27 @@ declare global {
         Array<{ path: string; manufacturer: string }>
       >;
       testarConexao: (
-        config: SerialConfig
+        config: SerialConfig,
       ) => Promise<{ sucesso: boolean; peso?: string; erro?: string }>;
       conectar: (
         config: SerialConfig,
-        enderecoSistema: string
+        enderecoSistema: string,
+        pontoVenda?: string
       ) => Promise<{ sucesso: boolean; erro?: string }>;
       onPeso: (callback: (peso: string) => void) => void;
       removerListenerPeso: () => void;
       sairFullscreen: () => Promise<{ sucesso: boolean; erro?: string }>;
       fecharApp: () => Promise<{ sucesso: boolean; erro?: string }>;
+      buscarPontosLanchonete: (baseUrl: string) => Promise<
+        Array<{
+          ponto_venda_id: string;
+          nome: string;
+          ordem?: string;
+          data_excluido?: string | null;
+          ponto_impressao_id?: string;
+          pedido_lanchonete?: string;
+        }>
+      >;
     };
   }
 
@@ -30,15 +41,18 @@ declare global {
 // Elementos do formulário
 const form = document.getElementById('configForm') as HTMLFormElement;
 const portaSerialSelect = document.getElementById(
-  'portaSerial'
+  'portaSerial',
 ) as HTMLSelectElement;
 const btnAtualizarPortas = document.getElementById(
-  'btnAtualizarPortas'
+  'btnAtualizarPortas',
 ) as HTMLButtonElement;
 const btnTestar = document.getElementById('btnTestar') as HTMLButtonElement;
 const btnConectar = document.getElementById('btnConectar') as HTMLButtonElement;
+const pontoVendaSelect = document.getElementById(
+  'pontoVenda',
+) as HTMLSelectElement;
 const statusMessage = document.getElementById(
-  'statusMessage'
+  'statusMessage',
 ) as HTMLDivElement;
 
 // Chave para armazenar dados no localStorage
@@ -47,6 +61,7 @@ const STORAGE_KEY = 'balanca_config';
 // Interface para os dados salvos
 interface SavedConfig {
   enderecoSistema: string;
+  pontoVenda: string;
   portaSerial: string;
   baudRate: string;
   dataBits: string;
@@ -60,6 +75,7 @@ function salvarConfiguracao() {
     enderecoSistema: (
       document.getElementById('enderecoSistema') as HTMLInputElement
     ).value.trim(),
+    pontoVenda: pontoVendaSelect ? pontoVendaSelect.value : '',
     portaSerial: portaSerialSelect.value,
     baudRate: (document.getElementById('baudRate') as HTMLSelectElement).value,
     dataBits: (document.getElementById('dataBits') as HTMLSelectElement).value,
@@ -94,10 +110,14 @@ function carregarConfiguracao(): SavedConfig | null {
 function preencherFormulario(config: SavedConfig) {
   // Preencher endereço do sistema
   const enderecoInput = document.getElementById(
-    'enderecoSistema'
+    'enderecoSistema',
   ) as HTMLInputElement;
   if (enderecoInput && config.enderecoSistema) {
     enderecoInput.value = config.enderecoSistema;
+  }
+
+  if (pontoVendaSelect && config.pontoVenda) {
+    pontoVendaSelect.value = config.pontoVenda;
   }
 
   // Nota: A porta serial será restaurada dentro da função carregarPortas()
@@ -105,14 +125,14 @@ function preencherFormulario(config: SavedConfig) {
 
   // Preencher outros campos
   const baudRateSelect = document.getElementById(
-    'baudRate'
+    'baudRate',
   ) as HTMLSelectElement;
   if (baudRateSelect && config.baudRate) {
     baudRateSelect.value = config.baudRate;
   }
 
   const dataBitsSelect = document.getElementById(
-    'dataBits'
+    'dataBits',
   ) as HTMLSelectElement;
   if (dataBitsSelect && config.dataBits) {
     dataBitsSelect.value = config.dataBits;
@@ -124,7 +144,7 @@ function preencherFormulario(config: SavedConfig) {
   }
 
   const stopBitsSelect = document.getElementById(
-    'stopBits'
+    'stopBits',
   ) as HTMLSelectElement;
   if (stopBitsSelect && config.stopBits) {
     stopBitsSelect.value = config.stopBits;
@@ -145,15 +165,15 @@ function mostrarMensagem(texto: string, tipo: 'success' | 'error' | 'info') {
 function obterConfiguracao(): SerialConfig | null {
   const porta = portaSerialSelect.value;
   const baudRate = parseInt(
-    (document.getElementById('baudRate') as HTMLSelectElement).value
+    (document.getElementById('baudRate') as HTMLSelectElement).value,
   );
   const dataBits = parseInt(
-    (document.getElementById('dataBits') as HTMLSelectElement).value
+    (document.getElementById('dataBits') as HTMLSelectElement).value,
   ) as 7 | 8;
   const parity = (document.getElementById('parity') as HTMLSelectElement)
     .value as 'none' | 'even' | 'odd';
   const stopBits = parseInt(
-    (document.getElementById('stopBits') as HTMLSelectElement).value
+    (document.getElementById('stopBits') as HTMLSelectElement).value,
   ) as 1 | 2;
 
   if (!porta) {
@@ -184,7 +204,7 @@ async function carregarPortas() {
         '<option value="">Nenhuma porta encontrada</option>';
       mostrarMensagem(
         'Nenhuma porta serial encontrada. Verifique se há dispositivos conectados.',
-        'info'
+        'info',
       );
       return;
     }
@@ -205,7 +225,7 @@ async function carregarPortas() {
     if (savedConfig && savedConfig.portaSerial) {
       // Verificar se a porta salva ainda existe na lista
       const portaExiste = portas.some(
-        (p) => p.path === savedConfig.portaSerial
+        (p) => p.path === savedConfig.portaSerial,
       );
       if (portaExiste) {
         portaSerialSelect.value = savedConfig.portaSerial;
@@ -222,7 +242,72 @@ async function carregarPortas() {
   }
 }
 
+/**
+ * Carrega pontos de venda (lanchonete) a partir do endereço do sistema.
+ * Popula o <select id="pontoVenda">. Se a API retornar [], mantém só a opção padrão.
+ */
+async function carregarPontosLanchonete(baseUrl: string): Promise<void> {
+  if (!pontoVendaSelect) return;
+  const baseUrlNorm = baseUrl.trim().replace(/\/+$/, '');
+  if (
+    !baseUrlNorm.startsWith('http://') &&
+    !baseUrlNorm.startsWith('https://')
+  ) {
+    pontoVendaSelect.innerHTML =
+      '<option value="">Selecione um ponto de venda</option>';
+    return;
+  }
+  pontoVendaSelect.disabled = true;
+  pontoVendaSelect.innerHTML = '<option value="">Carregando pontos...</option>';
+  try {
+    const lista = await window.balanca.buscarPontosLanchonete(baseUrlNorm);
+    pontoVendaSelect.innerHTML =
+      '<option value="">Selecione um ponto de venda</option>';
+    if (lista && lista.length > 0) {
+      lista.forEach((item) => {
+        const opt = document.createElement('option');
+        opt.value = String(item.ponto_venda_id);
+        opt.textContent = item.nome;
+        pontoVendaSelect.appendChild(opt);
+      });
+      mostrarMensagem(
+        `${lista.length} ponto(s) de venda carregado(s).`,
+        'success',
+      );
+    } else {
+      mostrarMensagem('Nenhum ponto de venda cadastrado.', 'info');
+    }
+  } catch (error: any) {
+    pontoVendaSelect.innerHTML =
+      '<option value="">Selecione um ponto de venda</option>';
+    mostrarMensagem(
+      `Erro ao carregar pontos: ${error.message || error}`,
+      'error',
+    );
+  } finally {
+    pontoVendaSelect.disabled = false;
+  }
+}
+
 // Event listeners
+const enderecoSistemaInput = document.getElementById(
+  'enderecoSistema',
+) as HTMLInputElement;
+if (enderecoSistemaInput) {
+  enderecoSistemaInput.addEventListener('blur', () => {
+    const baseUrl = enderecoSistemaInput.value.trim();
+    if (
+      baseUrl &&
+      (baseUrl.startsWith('http://') || baseUrl.startsWith('https://'))
+    ) {
+      carregarPontosLanchonete(baseUrl);
+    } else if (pontoVendaSelect) {
+      pontoVendaSelect.innerHTML =
+        '<option value="">Selecione um ponto de venda</option>';
+    }
+  });
+}
+
 btnAtualizarPortas.addEventListener('click', carregarPortas);
 
 btnTestar.addEventListener('click', async () => {
@@ -239,7 +324,7 @@ btnTestar.addEventListener('click', async () => {
 
     if (resultado.sucesso && resultado.peso) {
       alert(
-        `Conexão com a balança realizada com sucesso.\n\nPeso atual na balança: ${resultado.peso}`
+        `Conexão com a balança realizada com sucesso.\n\nPeso atual na balança: ${resultado.peso}`,
       );
       mostrarMensagem('Teste realizado com sucesso!', 'success');
     } else {
@@ -274,7 +359,7 @@ form.addEventListener('submit', async (e) => {
   ) {
     mostrarMensagem(
       'O endereço do sistema deve começar com http:// ou https://',
-      'error'
+      'error',
     );
     return;
   }
@@ -287,8 +372,13 @@ form.addEventListener('submit', async (e) => {
 
   mostrarMensagem('Conectando à balança e abrindo sistema...', 'info');
 
+  const pontoVenda = pontoVendaSelect ? pontoVendaSelect.value : '';
   try {
-    const resultado = await window.balanca.conectar(config, enderecoSistema);
+    const resultado = await window.balanca.conectar(
+      config,
+      enderecoSistema,
+      pontoVenda || undefined
+    );
 
     if (resultado.sucesso) {
       // Salvar configuração no localStorage quando conectar com sucesso
@@ -296,7 +386,7 @@ form.addEventListener('submit', async (e) => {
 
       mostrarMensagem(
         'Conectado com sucesso! A WebView será aberta em breve.',
-        'success'
+        'success',
       );
       // Opcionalmente, podemos fechar a janela de configuração após alguns segundos
       // setTimeout(() => window.close(), 2000);
@@ -330,9 +420,21 @@ function inicializarAplicacao() {
   if (savedConfig) {
     console.log(
       'Configuração encontrada, preenchendo formulário:',
-      savedConfig
+      savedConfig,
     );
     preencherFormulario(savedConfig);
+    // Carregar pontos de venda se houver endereço salvo e restaurar seleção
+    if (
+      savedConfig.enderecoSistema &&
+      (savedConfig.enderecoSistema.startsWith('http://') ||
+        savedConfig.enderecoSistema.startsWith('https://'))
+    ) {
+      carregarPontosLanchonete(savedConfig.enderecoSistema).then(() => {
+        if (savedConfig.pontoVenda && pontoVendaSelect) {
+          pontoVendaSelect.value = savedConfig.pontoVenda;
+        }
+      });
+    }
   } else {
     console.log('Nenhuma configuração salva encontrada');
   }

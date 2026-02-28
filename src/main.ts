@@ -24,6 +24,8 @@ let isQuitting: boolean = false;
 let timerVerificarSolicitacao: NodeJS.Timeout | null = null;
 let timerVerificarNavegacao: NodeJS.Timeout | null = null;
 let timerVerificarESC: NodeJS.Timeout | null = null;
+// Ponto de venda selecionado no renderer; injetado na WebView para uso em pedido-lanchonete
+let pontoVendaParaWebview: string | null = null;
 
 interface SerialConfig {
   port: string;
@@ -195,6 +197,8 @@ function criarWebView(enderecoSistema: string) {
   webViewWindow.webContents.on('did-finish-load', () => {
     // Resetar flag quando a página recarregar
     messageChannelInicializado = false;
+    // Injetar ponto de venda no contexto da WebView (para pedido-lanchonete/index.js)
+    injetarPontoVendaNaWebview();
     // Aguardar um pouco para garantir que o JavaScript da página foi executado
     // e que o listener window.addEventListener('message') já está registrado
     setTimeout(() => {
@@ -231,6 +235,7 @@ function criarWebView(enderecoSistema: string) {
   webViewWindow.on('closed', () => {
     webViewWindow = null;
     messageChannelInicializado = false;
+    pontoVendaParaWebview = null;
   });
 }
 
@@ -446,6 +451,32 @@ function configurarEscutaSolicitacaoPeso(): void {
   `
     )
     .catch(() => {});
+}
+
+/**
+ * Injeta o ponto de venda (salvo no renderer) no contexto da WebView.
+ * Roda após did-finish-load (a página já executou), então disparamos um evento
+ * para o pedido-lanchonete/index.js atualizar pontoVendaBalanca.
+ */
+function injetarPontoVendaNaWebview(): void {
+  if (!webViewWindow || webViewWindow.isDestroyed()) {
+    return;
+  }
+  const value =
+    pontoVendaParaWebview === null || pontoVendaParaWebview === ''
+      ? 'null'
+      : JSON.stringify(pontoVendaParaWebview);
+  const script = `
+    window.__PONTO_VENDA_BALANCA__ = ${value};
+    try {
+      window.dispatchEvent(new CustomEvent('electronPontoVendaReady', { detail: window.__PONTO_VENDA_BALANCA__ }));
+    } catch (e) {}
+  `;
+  webViewWindow.webContents
+    .executeJavaScript(script)
+    .catch((err) => {
+      console.error('Erro ao injetar ponto de venda na WebView:', err);
+    });
 }
 
 // Função para configurar escuta de mensagens de navegação da WebView
@@ -1939,9 +1970,37 @@ ipcMain.handle('testar-conexao', async (_, config: SerialConfig) => {
   }
 });
 
+/** Resposta da API pontos-lanchonete */
+interface PontoLanchoneteItem {
+  ponto_venda_id: string;
+  nome: string;
+  ordem?: string;
+  data_excluido?: string | null;
+  ponto_impressao_id?: string;
+  pedido_lanchonete?: string;
+}
+
+ipcMain.handle(
+  'buscar-pontos-lanchonete',
+  async (_: unknown, baseUrl: string): Promise<PontoLanchoneteItem[]> => {
+    const url = baseUrl.replace(/\/+$/, '') + '/index/pontos-lanchonete';
+    const res = await fetch(url, { method: 'GET' });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    }
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  }
+);
+
 ipcMain.handle(
   'conectar-balanca',
-  async (_, config: SerialConfig, enderecoSistema: string) => {
+  async (
+    _,
+    config: SerialConfig,
+    enderecoSistema: string,
+    pontoVenda?: string
+  ) => {
     try {
       // Validar endereço do sistema
       if (!enderecoSistema || !enderecoSistema.startsWith('http')) {
@@ -1950,6 +2009,10 @@ ipcMain.handle(
           erro: 'Endereço do sistema inválido. Deve começar com http:// ou https://',
         };
       }
+
+      // Guardar ponto de venda para injetar na WebView (pedido-lanchonete)
+      pontoVendaParaWebview =
+        pontoVenda !== undefined && pontoVenda !== '' ? pontoVenda : null;
 
       // Abrir conexão serial
       await abrirConexaoSerial(config);

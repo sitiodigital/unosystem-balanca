@@ -16,9 +16,13 @@ contextBridge.exposeInMainWorld('balanca', {
   testarConexao: (config: SerialConfig) =>
     ipcRenderer.invoke('testar-conexao', config),
 
-  // Conectar definitivamente e abrir WebView
-  conectar: (config: SerialConfig, enderecoSistema: string) =>
-    ipcRenderer.invoke('conectar-balanca', config, enderecoSistema),
+  // Conectar definitivamente e abrir WebView (pontoVenda é injetado na WebView para pedido-lanchonete)
+  conectar: (
+    config: SerialConfig,
+    enderecoSistema: string,
+    pontoVenda?: string
+  ) =>
+    ipcRenderer.invoke('conectar-balanca', config, enderecoSistema, pontoVenda),
 
   // Escutar peso da balança
   onPeso: (callback: (peso: string) => void) => {
@@ -39,4 +43,8 @@ contextBridge.exposeInMainWorld('balanca', {
   // Esta função deve ser usada ao invés de window.close() para garantir
   // que todos os processos sejam encerrados corretamente
   fecharApp: () => ipcRenderer.invoke('app-quit'),
+
+  // Buscar pontos de venda (lanchonete) a partir do endereço do sistema
+  buscarPontosLanchonete: (baseUrl: string) =>
+    ipcRenderer.invoke('buscar-pontos-lanchonete', baseUrl),
 });

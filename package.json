@@ -11,12 +11,16 @@
     "build:win:local": "pnpm build && node scripts/convert-icon.js && electron-builder --win --x64",
     "fix:electron": "node scripts/fix-electron.js",
     "fix:electron:win": "powershell -ExecutionPolicy Bypass -File scripts/fix-electron.ps1",
-    "install:electron": "node scripts/force-install-electron.js"
+    "install:electron": "node scripts/force-install-electron.js",
+    "clear-storage": "node scripts/clear-storage.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.19.0",
+  "pnpm": {
+    "onlyBuiltDependencies": ["electron"]
+  },
   "dependencies": {
     "@serialport/parser-readline": "^13.0.0",
     "serialport": "^13.0.0"
@@ -25,7 +29,7 @@
     "@types/node": "^20.14.0",
     "chokidar": "^5.0.0",
     "concurrently": "^9.2.1",
-    "electron": "^39.2.7",
+    "electron": "^39.7.0",
     "electron-builder": "^26.0.12",
     "nodemon": "^3.1.11",
     "sharp": "^0.33.0",
