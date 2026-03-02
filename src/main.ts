@@ -1223,15 +1223,24 @@ function enviarComando(comando: string | Buffer): Promise<void> {
 }
 
 // Função para extrair valor numérico bruto do peso
-// Entrada: string com dígitos (ex: "00415", "ST,GS, 00415 kg", etc.)
-// Saída: número inteiro (ex: 415) ou null se inválido
+// Entrada: string com dígitos (ex: "00415", "ST,GS, 00415 kg", ";0260", etc.)
+// Saída: número inteiro (ex: 415, -260) ou null se inválido
 function extrairValorNumericoBruto(pesoBruto: string): number | null {
   if (!pesoBruto || typeof pesoBruto !== 'string') {
     return null;
   }
 
-  // Extrair apenas dígitos numéricos (incluindo possível sinal negativo)
-  const matchDigitos = pesoBruto.match(/-?\d+/);
+  const texto = pesoBruto.trim();
+
+  // Algumas balanças Toledo usam prefixo ';' para indicar valores negativos (ex: ";0260")
+  // Nesse caso, considerar o número como negativo.
+  let sinal = 1;
+  if (texto.startsWith(';')) {
+    sinal = -1;
+  }
+
+  // Extrair apenas dígitos numéricos
+  const matchDigitos = texto.match(/\d+/);
 
   if (!matchDigitos || matchDigitos[0].length === 0) {
     return null;
@@ -1239,13 +1248,13 @@ function extrairValorNumericoBruto(pesoBruto: string): number | null {
 
   const digitos = matchDigitos[0];
 
-  // Converter para número
-  const valorNumerico = parseInt(digitos, 10);
-
-  // Verificar se é um número válido
+  // Converter para número e aplicar sinal
+  let valorNumerico = parseInt(digitos, 10);
   if (isNaN(valorNumerico)) {
     return null;
   }
+
+  valorNumerico = valorNumerico * sinal;
 
   // Verificar se o valor é razoável (entre -999999 e 999999 para evitar valores absurdos)
   if (Math.abs(valorNumerico) > 999999) {
