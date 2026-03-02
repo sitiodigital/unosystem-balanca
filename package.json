@@ -1,6 +1,6 @@
 {
   "name": "unosystem-balanca",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Aplicação desktop Electron para configuração e comunicação com balança via porta serial",
   "main": "dist/main.js",
   "scripts": {
@@ -19,7 +19,9 @@
   "license": "ISC",
   "packageManager": "pnpm@10.19.0",
   "pnpm": {
-    "onlyBuiltDependencies": ["electron"]
+    "onlyBuiltDependencies": [
+      "electron"
+    ]
   },
   "dependencies": {
     "@serialport/parser-readline": "^13.0.0",
