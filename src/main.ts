@@ -1,8 +1,13 @@
 import { app, BrowserWindow, ipcMain, Menu } from 'electron';
 import path from 'path';
+import Store from 'electron-store';
 import { SerialPort } from 'serialport';
 import { ReadlineParser } from '@serialport/parser-readline';
 import { Transform } from 'stream';
+
+const store = new Store<{ pontoVendaBalanca: string | null }>({
+  name: 'balanca-config',
+});
 
 let mainWindow: BrowserWindow | null = null;
 let webViewWindow: BrowserWindow | null = null;
@@ -24,8 +29,6 @@ let isQuitting: boolean = false;
 let timerVerificarSolicitacao: NodeJS.Timeout | null = null;
 let timerVerificarNavegacao: NodeJS.Timeout | null = null;
 let timerVerificarESC: NodeJS.Timeout | null = null;
-// Ponto de venda selecionado no renderer; injetado na WebView para uso em pedido-lanchonete
-let pontoVendaParaWebview: string | null = null;
 
 interface SerialConfig {
   port: string;
@@ -75,7 +78,7 @@ function createWindow() {
     if (!isQuitting) {
       event.preventDefault(); // Prevenir fechamento imediato
       console.log(
-        'Fechamento da janela principal detectado, iniciando encerramento...'
+        'Fechamento da janela principal detectado, iniciando encerramento...',
       );
       // Marcar que está encerrando para evitar loops
       isQuitting = true;
@@ -88,13 +91,13 @@ function createWindow() {
   // Quando a janela principal carregar, verificar se deve redirecionar automaticamente
   mainWindow.webContents.on('did-finish-load', async () => {
     console.log(
-      'Janela principal carregada, verificando se deve redirecionar...'
+      'Janela principal carregada, verificando se deve redirecionar...',
     );
 
     // Se há instrução explícita de abrir tela inicial, não redirecionar
     if (deveAbrirTelaInicial) {
       console.log(
-        'Instrução explícita detectada no carregamento, permitindo mostrar janela principal'
+        'Instrução explícita detectada no carregamento, permitindo mostrar janela principal',
       );
       podeMostrarJanelaPrincipal = true;
       deveAbrirTelaInicial = false; // Resetar após usar
@@ -114,7 +117,7 @@ function createWindow() {
         mainWindow.hide();
       }
       console.log(
-        'Redirecionamento automático realizado, mantendo janela principal oculta'
+        'Redirecionamento automático realizado, mantendo janela principal oculta',
       );
     } else {
       // Se não redirecionou, permitir mostrar a janela principal
@@ -136,7 +139,7 @@ function createWindow() {
       !mainWindow.isDestroyed()
     ) {
       console.log(
-        'Tentativa de mostrar janela principal bloqueada (aguardando verificação)'
+        'Tentativa de mostrar janela principal bloqueada (aguardando verificação)',
       );
       mainWindow.hide();
     }
@@ -159,6 +162,7 @@ function criarWebView(enderecoSistema: string) {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      preload: path.join(__dirname, 'preload-webview.js'),
     },
   });
 
@@ -235,7 +239,6 @@ function criarWebView(enderecoSistema: string) {
   webViewWindow.on('closed', () => {
     webViewWindow = null;
     messageChannelInicializado = false;
-    pontoVendaParaWebview = null;
   });
 }
 
@@ -392,7 +395,7 @@ function configurarEscutaSolicitacaoPeso(): void {
         setTimeout(() => el.remove(), 50);
       };
     })();
-  `
+  `,
     )
     .catch(() => {});
 
@@ -408,7 +411,7 @@ function configurarEscutaSolicitacaoPeso(): void {
       .executeJavaScript(
         `
       document.getElementById('__electron_solicitar_peso_now__') !== null
-    `
+    `,
       )
       .then((existe) => {
         if (existe && !isQuitting) {
@@ -448,35 +451,33 @@ function configurarEscutaSolicitacaoPeso(): void {
         };
       }
     })();
-  `
+  `,
     )
     .catch(() => {});
 }
 
 /**
- * Injeta o ponto de venda (salvo no renderer) no contexto da WebView.
- * Roda após did-finish-load (a página já executou), então disparamos um evento
- * para o pedido-lanchonete/index.js atualizar pontoVendaBalanca.
+ * Injeta o ponto de venda (persistido no electron-store) no contexto da WebView.
+ * Fallback para páginas que ainda escutam electronPontoVendaReady; a fonte de verdade é window.api.getPontoVenda().
  */
 function injetarPontoVendaNaWebview(): void {
   if (!webViewWindow || webViewWindow.isDestroyed()) {
     return;
   }
+  const ponto = store.get('pontoVendaBalanca');
   const value =
-    pontoVendaParaWebview === null || pontoVendaParaWebview === ''
+    ponto === undefined || ponto === null || ponto === ''
       ? 'null'
-      : JSON.stringify(pontoVendaParaWebview);
+      : JSON.stringify(ponto);
   const script = `
     window.__PONTO_VENDA_BALANCA__ = ${value};
     try {
       window.dispatchEvent(new CustomEvent('electronPontoVendaReady', { detail: window.__PONTO_VENDA_BALANCA__ }));
     } catch (e) {}
   `;
-  webViewWindow.webContents
-    .executeJavaScript(script)
-    .catch((err) => {
-      console.error('Erro ao injetar ponto de venda na WebView:', err);
-    });
+  webViewWindow.webContents.executeJavaScript(script).catch((err) => {
+    console.error('Erro ao injetar ponto de venda na WebView:', err);
+  });
 }
 
 // Função para configurar escuta de mensagens de navegação da WebView
@@ -523,7 +524,7 @@ function configurarEscutaNavegacao(): void {
       window.addEventListener('message', window.__electronNavigationListener);
       console.log('Escuta de navegação configurada');
     })();
-  `
+  `,
     )
     .then(() => {
       console.log('Script de navegação injetado com sucesso');
@@ -544,7 +545,7 @@ function configurarEscutaNavegacao(): void {
       .executeJavaScript(
         `
       document.getElementById('__electron_abrir_tela_inicial__') !== null
-    `
+    `,
       )
       .then((existe) => {
         if (existe && !isQuitting) {
@@ -635,7 +636,7 @@ function configurarEscutaESC(): void {
       document.addEventListener('keydown', window.__electronESCListener, true);
       console.log('Escuta de ESC configurada na WebView');
     })();
-  `
+  `,
     )
     .then(() => {
       console.log('Script de ESC injetado com sucesso na WebView');
@@ -656,12 +657,12 @@ function configurarEscutaESC(): void {
       .executeJavaScript(
         `
       document.getElementById('__electron_sair_fullscreen__') !== null
-    `
+    `,
       )
       .then((existe) => {
         if (existe && !isQuitting) {
           console.log(
-            'Solicitação para sair do fullscreen detectada na WebView'
+            'Solicitação para sair do fullscreen detectada na WebView',
           );
           if (webViewWindow && !webViewWindow.isDestroyed()) {
             webViewWindow.setFullScreen(false);
@@ -692,7 +693,7 @@ function configurarEscutaESC(): void {
 async function solicitarPesoParaWebView(): Promise<void> {
   if (!serialPort || !serialPort.isOpen) {
     console.log(
-      'Conexão serial não está aberta, não é possível solicitar peso'
+      'Conexão serial não está aberta, não é possível solicitar peso',
     );
     return;
   }
@@ -727,7 +728,7 @@ async function solicitarPesoParaWebView(): Promise<void> {
 // Função otimizada para leitura rápida usando comando conhecido
 function lerPesoRapido(
   comando: string | Buffer,
-  timeout: number = 3000
+  timeout: number = 3000,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     if (!parser || !serialPort || !serialPort.isOpen) {
@@ -991,7 +992,7 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
             err.message.includes('EACCES'))
         ) {
           console.log(
-            'Erro Access Denied detectado, tentando fechar porta novamente...'
+            'Erro Access Denied detectado, tentando fechar porta novamente...',
           );
           try {
             await fecharConexaoSerial();
@@ -999,16 +1000,16 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
             await new Promise((r) => setTimeout(r, 500));
             reject(
               new Error(
-                `Porta ${config.port} está em uso ou não foi liberada corretamente. Tente novamente em alguns segundos.`
-              )
+                `Porta ${config.port} está em uso ou não foi liberada corretamente. Tente novamente em alguns segundos.`,
+              ),
             );
           } catch (closeErr: any) {
             reject(
               new Error(
                 `Erro ao fechar porta serial: ${
                   closeErr?.message || closeErr
-                }. A porta pode estar em uso.`
-              )
+                }. A porta pode estar em uso.`,
+              ),
             );
           }
         } else {
@@ -1046,7 +1047,7 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
             '\nTamanho:',
             chunk.length,
             'bytes',
-            '\n=============================='
+            '\n==============================',
           );
           this.push(chunk);
           callback();
@@ -1068,7 +1069,7 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
           '\nTamanho:',
           data.length,
           'bytes',
-          '\n=========================================='
+          '\n==========================================',
         );
 
         // Processar resposta Toledo imediatamente se estiver no formato STX...ETX
@@ -1083,7 +1084,7 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
             // Essas respostas indicam que a balança não está pronta ou estável
             if (pesoBruto.match(/^[Nn]+$/) || pesoBruto.match(/^[Ee]+$/)) {
               console.log(
-                `Resposta de status/erro recebida: "${pesoBruto}" - Balança pode não estar estável ou pronta. Aguardando estabilização...`
+                `Resposta de status/erro recebida: "${pesoBruto}" - Balança pode não estar estável ou pronta. Aguardando estabilização...`,
               );
               // Não processar como peso válido, apenas logar
               return;
@@ -1098,7 +1099,7 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
               console.log(
                 'Peso processado do listener direto:',
                 pesoEmKg,
-                'kg'
+                'kg',
               );
               // Enviar peso para a janela principal
               mainWindow?.webContents.send('peso-balanca', pesoEmKg);
@@ -1133,14 +1134,14 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
         console.log('Peso recebido (parser) - Length:', pesoBruto.length);
         console.log(
           'Peso recebido (parser) - Hex:',
-          Buffer.from(pesoBruto, 'utf8').toString('hex')
+          Buffer.from(pesoBruto, 'utf8').toString('hex'),
         );
 
         // Verificar se é uma resposta de status/erro (ex: "NNNNN")
         // Essas respostas indicam que a balança não está pronta ou estável
         if (pesoBruto.match(/^[Nn]+$/) || pesoBruto.match(/^[Ee]+$/)) {
           console.log(
-            `Resposta de status/erro recebida: "${pesoBruto}" - Balança pode não estar estável ou pronta. Aguardando estabilização...`
+            `Resposta de status/erro recebida: "${pesoBruto}" - Balança pode não estar estável ou pronta. Aguardando estabilização...`,
           );
           // Não processar como peso válido, apenas logar
           return;
@@ -1204,7 +1205,7 @@ function enviarComando(comando: string | Buffer): Promise<void> {
       '\nTamanho:',
       buffer.length,
       'bytes',
-      '\n======================'
+      '\n======================',
     );
 
     serialPort.write(buffer, (err) => {
@@ -1282,7 +1283,7 @@ function converterPesoParaQuilogramas(pesoBruto: string): string | null {
   const pesoFormatado = pesoEmKg.toFixed(3);
 
   console.log(
-    `Conversão: "${pesoBruto}" -> ${valorNumerico} -> ${pesoEmKg} kg -> "${pesoFormatado}" kg`
+    `Conversão: "${pesoBruto}" -> ${valorNumerico} -> ${pesoEmKg} kg -> "${pesoFormatado}" kg`,
   );
 
   return pesoFormatado;
@@ -1329,7 +1330,7 @@ function enviarPesoParaWebView(pesoNumerico: number): void {
     // Ignorar erros se a página ainda não estiver carregada
     console.log(
       'Erro ao injetar script na WebView (pode ser normal se a página ainda não carregou):',
-      err.message
+      err.message,
     );
   });
 }
@@ -1373,7 +1374,7 @@ function processarRespostaToledo(data: string | Buffer): string {
 function lerPeso(
   timeout: number = 10000,
   tentarComandos: boolean = true,
-  maxTentativas: number = 3
+  maxTentativas: number = 3,
 ): Promise<string> {
   return new Promise(async (resolve, reject) => {
     if (!parser || !serialPort || !serialPort.isOpen) {
@@ -1395,7 +1396,7 @@ function lerPeso(
     timeoutModoContinuo = setTimeout(() => {
       if (!dadosRecebidosModoContinuo) {
         console.log(
-          'Nenhum dado recebido em modo contínuo, tentando comandos...'
+          'Nenhum dado recebido em modo contínuo, tentando comandos...',
         );
       }
     }, 800);
@@ -1423,7 +1424,7 @@ function lerPeso(
         if (isNaN(pesoNum)) {
           console.log(
             'Peso não numérico recebido via callback:',
-            pesoConvertido
+            pesoConvertido,
           );
           return; // Não resolver, continuar esperando
         }
@@ -1447,7 +1448,7 @@ function lerPeso(
         console.log(
           'Peso recebido via callback - resolvendo Promise com:',
           pesoConvertido,
-          'kg'
+          'kg',
         );
         resolve(pesoConvertido);
       }
@@ -1474,7 +1475,7 @@ function lerPeso(
           // Verificar se é uma resposta de status/erro (ex: "NNNNN")
           if (pesoBruto.match(/^[Nn]+$/) || pesoBruto.match(/^[Ee]+$/)) {
             console.log(
-              `Resposta de status/erro recebida em modo contínuo: "${pesoBruto}" - Continuando a aguardar peso válido...`
+              `Resposta de status/erro recebida em modo contínuo: "${pesoBruto}" - Continuando a aguardar peso válido...`,
             );
             return; // Não resolver, continuar esperando
           }
@@ -1487,7 +1488,7 @@ function lerPeso(
 
           if (pesoEmKg === null) {
             console.log(
-              'Peso inválido recebido em modo contínuo, ignorando...'
+              'Peso inválido recebido em modo contínuo, ignorando...',
             );
             return; // Não resolver, continuar esperando
           }
@@ -1523,7 +1524,7 @@ function lerPeso(
           // Verificar se é uma resposta de status/erro (ex: "NNNNN")
           if (pesoBruto.match(/^[Nn]+$/) || pesoBruto.match(/^[Ee]+$/)) {
             console.log(
-              `Resposta de status/erro recebida em modo contínuo (formato alternativo): "${pesoBruto}" - Continuando a aguardar peso válido...`
+              `Resposta de status/erro recebida em modo contínuo (formato alternativo): "${pesoBruto}" - Continuando a aguardar peso válido...`,
             );
             return; // Não resolver, continuar esperando
           }
@@ -1536,7 +1537,7 @@ function lerPeso(
 
           if (pesoEmKg === null) {
             console.log(
-              'Peso inválido recebido em modo contínuo (formato alternativo), ignorando...'
+              'Peso inválido recebido em modo contínuo (formato alternativo), ignorando...',
             );
             return; // Não resolver, continuar esperando
           }
@@ -1562,7 +1563,7 @@ function lerPeso(
           console.log(
             'Dados recebidos em modo contínuo (formato alternativo):',
             pesoEmKg,
-            'kg'
+            'kg',
           );
           resolve(pesoEmKg);
         }
@@ -1611,13 +1612,13 @@ function lerPeso(
           // Verificar se já recebeu resposta válida antes de continuar
           if (pesoResolvido || dadosRecebidosModoContinuo) {
             console.log(
-              `Resposta recebida após comando ${i}, interrompendo tentativas adicionais.`
+              `Resposta recebida após comando ${i}, interrompendo tentativas adicionais.`,
             );
             // Salvar comando que funcionou
             if (i > 0 && comandosParaTentar[i - 1]) {
               comandoFuncionando = comandosParaTentar[i - 1];
               console.log(
-                'Comando funcionando salvo em cache para leituras rápidas'
+                'Comando funcionando salvo em cache para leituras rápidas',
               );
             }
             break;
@@ -1630,7 +1631,7 @@ function lerPeso(
           console.log(
             `Tentativa ${i + 1}/${
               comandosParaTentar.length
-            }: Enviando comando ${cmdDesc}`
+            }: Enviando comando ${cmdDesc}`,
           );
           try {
             await enviarComando(cmd);
@@ -1643,12 +1644,12 @@ function lerPeso(
               console.log(
                 `Resposta recebida após comando ${
                   i + 1
-                }, interrompendo tentativas adicionais.`
+                }, interrompendo tentativas adicionais.`,
               );
               // Salvar comando que funcionou
               comandoFuncionando = cmd;
               console.log(
-                'Comando funcionando salvo em cache para leituras rápidas'
+                'Comando funcionando salvo em cache para leituras rápidas',
               );
               break;
             }
@@ -1659,7 +1660,7 @@ function lerPeso(
 
         if (pesoResolvido || dadosRecebidosModoContinuo) {
           console.log(
-            'Resposta recebida com sucesso, não é necessário aguardar mais comandos.'
+            'Resposta recebida com sucesso, não é necessário aguardar mais comandos.',
           );
         } else {
           console.log('Todos os comandos enviados, aguardando resposta...');
@@ -1667,7 +1668,7 @@ function lerPeso(
       } catch (err) {
         console.log(
           'Erro ao enviar comandos Toledo (continuando mesmo assim):',
-          err
+          err,
         );
       }
     }
@@ -1687,16 +1688,16 @@ function lerPeso(
         console.log('  1. A balança está ligada e funcionando');
         console.log('  2. O cabo serial está conectado corretamente');
         console.log(
-          '  3. A porta COM está correta (verifique no Gerenciador de Dispositivos)'
+          '  3. A porta COM está correta (verifique no Gerenciador de Dispositivos)',
         );
         console.log('  4. A balança está configurada para comunicação serial');
         console.log('     - Acesse o menu da balança');
         console.log('     - Procure por "Comunicação Serial" ou "RS232"');
         console.log(
-          '     - Configure o protocolo (Prt1, TOLEDO Continuous, etc.)'
+          '     - Configure o protocolo (Prt1, TOLEDO Continuous, etc.)',
         );
         console.log(
-          '  5. Os parâmetros de comunicação na balança correspondem:'
+          '  5. Os parâmetros de comunicação na balança correspondem:',
         );
         console.log('     - Baud Rate: 9600');
         console.log('     - Data Bits: 8');
@@ -1705,14 +1706,14 @@ function lerPeso(
         console.log('  6. Nenhum outro programa está usando a porta COM');
         console.log('');
         console.log(
-          'Se a balança envia dados automaticamente (modo contínuo),'
+          'Se a balança envia dados automaticamente (modo contínuo),',
         );
         console.log('certifique-se de que essa opção está habilitada no menu.');
         console.log('');
         reject(
           new Error(
-            'Timeout: Nenhum dado recebido da balança. Verifique se a balança está ligada e configurada corretamente.'
-          )
+            'Timeout: Nenhum dado recebido da balança. Verifique se a balança está ligada e configurada corretamente.',
+          ),
         );
       }
     }, timeout);
@@ -1745,7 +1746,7 @@ function lerPeso(
       // Verificar se é uma resposta de status/erro (ex: "NNNNN")
       if (pesoBruto.match(/^[Nn]+$/) || pesoBruto.match(/^[Ee]+$/)) {
         console.log(
-          `Resposta de status/erro recebida no onData: "${pesoBruto}" - Continuando a aguardar peso válido...`
+          `Resposta de status/erro recebida no onData: "${pesoBruto}" - Continuando a aguardar peso válido...`,
         );
         return; // Não resolver, continuar esperando
       }
@@ -1803,7 +1804,7 @@ interface SavedConfig {
 
 // Função para verificar se os dados obrigatórios estão preenchidos
 function verificarDadosObrigatoriosPreenchidos(
-  config: SavedConfig | null
+  config: SavedConfig | null,
 ): boolean {
   if (!config) {
     return false;
@@ -1821,7 +1822,7 @@ function verificarDadosObrigatoriosPreenchidos(
 
   // Verificar se todos os campos estão preenchidos e não são strings vazias
   const todosPreenchidos = camposObrigatorios.every(
-    (campo) => campo && campo.trim().length > 0
+    (campo) => campo && campo.trim().length > 0,
   );
 
   // Verificar se o endereço do sistema é válido (deve começar com http:// ou https://)
@@ -1871,7 +1872,7 @@ async function verificarERedirecionarAutomaticamente(): Promise<boolean> {
   // Não redirecionar se houver instrução explícita de abrir tela inicial
   if (deveAbrirTelaInicial) {
     console.log(
-      'Instrução explícita de abrir tela inicial detectada em verificarERedirecionarAutomaticamente, não redirecionando automaticamente'
+      'Instrução explícita de abrir tela inicial detectada em verificarERedirecionarAutomaticamente, não redirecionando automaticamente',
     );
     // NÃO resetar a flag aqui, pois ela será usada no did-finish-load
     return false;
@@ -1883,7 +1884,7 @@ async function verificarERedirecionarAutomaticamente(): Promise<boolean> {
   // Verificar se existe endereço do sistema salvo
   if (!config || !config.enderecoSistema) {
     console.log(
-      'Nenhum endereço do sistema salvo encontrado, não redirecionando'
+      'Nenhum endereço do sistema salvo encontrado, não redirecionando',
     );
     return false;
   }
@@ -1891,13 +1892,13 @@ async function verificarERedirecionarAutomaticamente(): Promise<boolean> {
   // Verificar se todos os dados obrigatórios estão preenchidos
   if (!verificarDadosObrigatoriosPreenchidos(config)) {
     console.log(
-      'Dados obrigatórios não estão completamente preenchidos, não redirecionando'
+      'Dados obrigatórios não estão completamente preenchidos, não redirecionando',
     );
     return false;
   }
 
   console.log(
-    'Configuração válida encontrada, redirecionando automaticamente para WebView...'
+    'Configuração válida encontrada, redirecionando automaticamente para WebView...',
   );
 
   // Converter configuração para SerialConfig
@@ -1999,7 +2000,26 @@ ipcMain.handle(
     }
     const data = await res.json();
     return Array.isArray(data) ? data : [];
-  }
+  },
+);
+
+ipcMain.handle('get-ponto-venda', async (): Promise<string | null> => {
+  const value = store.get('pontoVendaBalanca');
+  return value === undefined || value === '' ? null : value;
+});
+
+ipcMain.handle(
+  'set-ponto-venda',
+  async (
+    _: unknown,
+    pontoVendaId: string | null | undefined,
+  ): Promise<void> => {
+    const value =
+      pontoVendaId !== undefined && pontoVendaId !== null && pontoVendaId !== ''
+        ? pontoVendaId
+        : null;
+    store.set('pontoVendaBalanca', value);
+  },
 );
 
 ipcMain.handle(
@@ -2008,7 +2028,7 @@ ipcMain.handle(
     _,
     config: SerialConfig,
     enderecoSistema: string,
-    pontoVenda?: string
+    pontoVenda?: string,
   ) => {
     try {
       // Validar endereço do sistema
@@ -2019,9 +2039,11 @@ ipcMain.handle(
         };
       }
 
-      // Guardar ponto de venda para injetar na WebView (pedido-lanchonete)
-      pontoVendaParaWebview =
-        pontoVenda !== undefined && pontoVenda !== '' ? pontoVenda : null;
+      // Persistir ponto de venda no electron-store (pedido-lanchonete e próxima abertura)
+      store.set(
+        'pontoVendaBalanca',
+        pontoVenda !== undefined && pontoVenda !== '' ? pontoVenda : null,
+      );
 
       // Abrir conexão serial
       await abrirConexaoSerial(config);
@@ -2042,7 +2064,7 @@ ipcMain.handle(
         erro: error.message || 'Erro ao conectar balança',
       };
     }
-  }
+  },
 );
 
 // Handler para focar/abrir a janela principal quando solicitado da WebView
@@ -2052,7 +2074,7 @@ ipcMain.handle('abrir-tela-inicial', async () => {
     deveAbrirTelaInicial = true;
     podeMostrarJanelaPrincipal = true;
     console.log(
-      'Handler abrir-tela-inicial chamado, definindo flags para permitir exibição'
+      'Handler abrir-tela-inicial chamado, definindo flags para permitir exibição',
     );
 
     if (mainWindow) {

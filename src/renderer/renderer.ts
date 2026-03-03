@@ -26,6 +26,8 @@ declare global {
           pedido_lanchonete?: string;
         }>
       >;
+      getPontoVenda: () => Promise<string | null>;
+      setPontoVenda: (pontoVendaId: string | null) => Promise<void>;
     };
   }
 
@@ -404,6 +406,18 @@ form.addEventListener('submit', async (e) => {
   }
 });
 
+/** Aplica o ponto de venda persistido (electron-store) no select, se existir. */
+async function aplicarPontoVendaPersistido() {
+  if (!pontoVendaSelect || !window.balanca.getPontoVenda) return;
+  try {
+    const id = await window.balanca.getPontoVenda();
+    if (id && id.trim() !== '') {
+      const opt = pontoVendaSelect.querySelector(`option[value="${id}"]`);
+      if (opt) pontoVendaSelect.value = id;
+    }
+  } catch (_) {}
+}
+
 // Aguardar DOM estar pronto antes de carregar dados
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', inicializarAplicacao);
@@ -429,14 +443,23 @@ function inicializarAplicacao() {
       (savedConfig.enderecoSistema.startsWith('http://') ||
         savedConfig.enderecoSistema.startsWith('https://'))
     ) {
-      carregarPontosLanchonete(savedConfig.enderecoSistema).then(() => {
-        if (savedConfig.pontoVenda && pontoVendaSelect) {
-          pontoVendaSelect.value = savedConfig.pontoVenda;
-        }
-      });
+      carregarPontosLanchonete(savedConfig.enderecoSistema).then(() =>
+        aplicarPontoVendaPersistido(),
+      );
+    } else {
+      aplicarPontoVendaPersistido();
     }
   } else {
     console.log('Nenhuma configuração salva encontrada');
+    aplicarPontoVendaPersistido();
+  }
+
+  // Persistir alteração do select de ponto de venda (electron-store)
+  if (pontoVendaSelect && window.balanca.setPontoVenda) {
+    pontoVendaSelect.addEventListener('change', () => {
+      const v = pontoVendaSelect.value;
+      window.balanca.setPontoVenda(v !== undefined && v !== '' ? v : null);
+    });
   }
 
   // Carregar portas ao iniciar (após um pequeno delay para garantir que o formulário foi preenchido)

@@ -47,4 +47,9 @@ contextBridge.exposeInMainWorld('balanca', {
   // Buscar pontos de venda (lanchonete) a partir do endereço do sistema
   buscarPontosLanchonete: (baseUrl: string) =>
     ipcRenderer.invoke('buscar-pontos-lanchonete', baseUrl),
+
+  // Ponto de venda persistido (electron-store) – leitura/escrita
+  getPontoVenda: () => ipcRenderer.invoke('get-ponto-venda'),
+  setPontoVenda: (pontoVendaId: string | null) =>
+    ipcRenderer.invoke('set-ponto-venda', pontoVendaId),
 });
