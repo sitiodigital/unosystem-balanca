@@ -30,12 +30,46 @@ let timerVerificarSolicitacao: NodeJS.Timeout | null = null;
 let timerVerificarNavegacao: NodeJS.Timeout | null = null;
 let timerVerificarESC: NodeJS.Timeout | null = null;
 
+const gotTheLock = app.requestSingleInstanceLock();
+
+if (!gotTheLock) {
+  app.quit();
+}
+
 interface SerialConfig {
   port: string;
   baudRate: number;
   dataBits: 7 | 8;
   parity: 'none' | 'even' | 'odd';
   stopBits: 1 | 2;
+}
+
+function focusExistingApplicationWindow(): void {
+  const target =
+    webViewWindow && !webViewWindow.isDestroyed()
+      ? webViewWindow
+      : mainWindow;
+
+  if (!target || target.isDestroyed()) {
+    return;
+  }
+
+  if (target === mainWindow) {
+    podeMostrarJanelaPrincipal = true;
+  }
+
+  if (target.isMinimized()) {
+    target.restore();
+  }
+  if (!target.isVisible()) {
+    target.show();
+  }
+  target.setFullScreen(true);
+  target.focus();
+
+  if (process.platform === 'win32') {
+    target.moveTop();
+  }
 }
 
 function createWindow() {
@@ -2131,88 +2165,94 @@ ipcMain.handle('app-quit', async () => {
   }
 });
 
-app.whenReady().then(() => {
-  // Remover completamente o menu da aplicação
-  Menu.setApplicationMenu(null);
+if (gotTheLock) {
+  app.on('second-instance', () => {
+    focusExistingApplicationWindow();
+  });
 
-  createWindow();
+  app.whenReady().then(() => {
+    // Remover completamente o menu da aplicação
+    Menu.setApplicationMenu(null);
+
+    createWindow();
+
+    /**
+     * Evento window-all-closed: disparado quando todas as janelas são fechadas
+     * IMPORTANTE: No macOS, o comportamento padrão é manter o app ativo após fechar janelas
+     * Vamos sobrescrever isso para garantir encerramento completo em todas as plataformas
+     */
+    app.on('window-all-closed', async () => {
+      console.log('Todas as janelas foram fechadas');
+      // Limpar recursos antes de encerrar
+      await limparRecursosCompletamente();
+
+      // No macOS, o comportamento padrão é manter o app ativo após fechar janelas
+      // Vamos sobrescrever isso para garantir encerramento completo
+      // Isso evita processos zumbis no Monitor de Atividade
+      app.quit();
+    });
+
+    /**
+     * Evento activate: disparado quando o app é ativado (macOS)
+     * Recria janela se não houver nenhuma aberta
+     */
+    app.on('activate', () => {
+      // Só recriar janela se não estiver encerrando
+      if (!isQuitting && BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      }
+    });
+
+    // Prevenir que o menu apareça - os listeners individuais nas janelas já cuidam disso
+  });
 
   /**
-   * Evento window-all-closed: disparado quando todas as janelas são fechadas
-   * IMPORTANTE: No macOS, o comportamento padrão é manter o app ativo após fechar janelas
-   * Vamos sobrescrever isso para garantir encerramento completo em todas as plataformas
+   * Evento before-quit: disparado ANTES do app encerrar
+   * Este é o lugar ideal para garantir limpeza completa de recursos
+   * IMPORTANTE: Usar app.quit() ao invés de app.exit() para garantir encerramento correto
    */
-  app.on('window-all-closed', async () => {
-    console.log('Todas as janelas foram fechadas');
-    // Limpar recursos antes de encerrar
+  app.on('before-quit', async (event) => {
+    // Se já estiver encerrando, não fazer nada
+    if (isQuitting) {
+      return;
+    }
+
+    console.log('Evento before-quit disparado, iniciando limpeza completa...');
+
+    // Prevenir saída imediata para garantir que todos os recursos sejam limpos
+    event.preventDefault();
+
+    // Limpar todos os recursos
     await limparRecursosCompletamente();
 
-    // No macOS, o comportamento padrão é manter o app ativo após fechar janelas
-    // Vamos sobrescrever isso para garantir encerramento completo
-    // Isso evita processos zumbis no Monitor de Atividade
+    // Aguardar um pouco para garantir que tudo foi fechado completamente
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // Usar app.quit() ao invés de app.exit(0) para garantir encerramento correto
+    // app.quit() respeita o ciclo de vida do Electron e garante que todos os processos sejam encerrados
     app.quit();
   });
 
   /**
-   * Evento activate: disparado quando o app é ativado (macOS)
-   * Recria janela se não houver nenhuma aberta
+   * Evento will-quit: disparado quando o app está prestes a encerrar
+   * Última chance de fazer limpeza antes do encerramento definitivo
    */
-  app.on('activate', () => {
-    // Só recriar janela se não estiver encerrando
-    if (!isQuitting && BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
+  app.on('will-quit', (event) => {
+    console.log('Evento will-quit disparado');
+    // Garantir que isQuitting está marcado
+    isQuitting = true;
   });
 
-  // Prevenir que o menu apareça - os listeners individuais nas janelas já cuidam disso
-});
-
-/**
- * Evento before-quit: disparado ANTES do app encerrar
- * Este é o lugar ideal para garantir limpeza completa de recursos
- * IMPORTANTE: Usar app.quit() ao invés de app.exit() para garantir encerramento correto
- */
-app.on('before-quit', async (event) => {
-  // Se já estiver encerrando, não fazer nada
-  if (isQuitting) {
-    return;
-  }
-
-  console.log('Evento before-quit disparado, iniciando limpeza completa...');
-
-  // Prevenir saída imediata para garantir que todos os recursos sejam limpos
-  event.preventDefault();
-
-  // Limpar todos os recursos
-  await limparRecursosCompletamente();
-
-  // Aguardar um pouco para garantir que tudo foi fechado completamente
-  await new Promise((resolve) => setTimeout(resolve, 200));
-
-  // Usar app.quit() ao invés de app.exit(0) para garantir encerramento correto
-  // app.quit() respeita o ciclo de vida do Electron e garante que todos os processos sejam encerrados
-  app.quit();
-});
-
-/**
- * Evento will-quit: disparado quando o app está prestes a encerrar
- * Última chance de fazer limpeza antes do encerramento definitivo
- */
-app.on('will-quit', (event) => {
-  console.log('Evento will-quit disparado');
-  // Garantir que isQuitting está marcado
-  isQuitting = true;
-});
-
-/**
- * Evento quit: disparado quando o app encerra
- * Útil para logging, mas não deve fazer operações assíncronas aqui
- */
-app.on('quit', () => {
-  console.log('App encerrado completamente');
-  // Forçar saída do processo principal após um timeout de segurança
-  // Isso garante que mesmo se algo der errado, o processo será encerrado
-  setTimeout(() => {
-    process.exit(0);
-  }, 1000);
-});
+  /**
+   * Evento quit: disparado quando o app encerra
+   * Útil para logging, mas não deve fazer operações assíncronas aqui
+   */
+  app.on('quit', () => {
+    console.log('App encerrado completamente');
+    // Forçar saída do processo principal após um timeout de segurança
+    // Isso garante que mesmo se algo der errado, o processo será encerrado
+    setTimeout(() => {
+      process.exit(0);
+    }, 1000);
+  });
+}
