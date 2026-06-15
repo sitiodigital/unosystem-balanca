@@ -19,6 +19,11 @@ let callbackPesoRecebido: ((peso: string) => void) | null = null;
 let messageChannelInicializado: boolean = false;
 // Cache do comando que funciona (para leituras rápidas)
 let comandoFuncionando: string | Buffer | null = null;
+const TIMEOUT_LEITURA_PESO_MS = 500;
+let ultimoPesoNumericoEnviado: number | null = null;
+let ultimoPesoBrutoRecebido: string | null = null;
+let ultimoPesoEmKg: string | null = null;
+let solicitacaoPesoEmAndamento = false;
 // Flag para controlar se há instrução explícita de abrir tela inicial
 let deveAbrirTelaInicial: boolean = false;
 // Flag global para controlar se a janela principal pode ser mostrada
@@ -732,37 +737,52 @@ async function solicitarPesoParaWebView(): Promise<void> {
     return;
   }
 
+  // Reenviar imediatamente o último peso conhecido (inclui zero e negativo)
+  if (ultimoPesoNumericoEnviado !== null) {
+    enviarPesoParaWebView(ultimoPesoNumericoEnviado);
+  }
+
+  if (solicitacaoPesoEmAndamento) {
+    return;
+  }
+
+  solicitacaoPesoEmAndamento = true;
+
   try {
     console.log('Solicitando peso da balança (modo rápido)...');
 
-    // Se já sabemos qual comando funciona, usar ele diretamente (muito mais rápido)
     if (comandoFuncionando) {
-      const pesoEmKg = await lerPesoRapido(comandoFuncionando, 3000);
-      if (pesoEmKg) {
-        const pesoNumerico = Math.round(parseFloat(pesoEmKg) * 1000);
-        enviarPesoParaWebView(pesoNumerico);
-        return;
+      try {
+        const pesoEmKg = await lerPesoRapido(
+          comandoFuncionando,
+          TIMEOUT_LEITURA_PESO_MS,
+        );
+        if (pesoEmKg !== null && pesoEmKg !== '') {
+          return;
+        }
+      } catch (error: any) {
+        console.log(
+          'lerPesoRapido timeout/erro, mantendo cache:',
+          error.message,
+        );
       }
     }
 
-    // Se não temos comando em cache, usar função normal (mas com timeout menor)
-    const pesoEmKg = await lerPeso(3000, true);
-    console.log('Peso lido:', pesoEmKg);
-
-    // Extrair valor numérico bruto (multiplicar por 1000 para converter de kg para gramas)
-    const pesoNumerico = Math.round(parseFloat(pesoEmKg) * 1000);
-
-    // Enviar para WebView
-    enviarPesoParaWebView(pesoNumerico);
-  } catch (error: any) {
-    console.error('Erro ao solicitar peso:', error.message);
+    try {
+      const pesoEmKg = await lerPeso(TIMEOUT_LEITURA_PESO_MS, true);
+      console.log('Peso lido:', pesoEmKg);
+    } catch (error: any) {
+      console.log('lerPeso timeout/erro, mantendo cache:', error.message);
+    }
+  } finally {
+    solicitacaoPesoEmAndamento = false;
   }
 }
 
 // Função otimizada para leitura rápida usando comando conhecido
 function lerPesoRapido(
   comando: string | Buffer,
-  timeout: number = 3000,
+  timeout: number = TIMEOUT_LEITURA_PESO_MS,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     if (!parser || !serialPort || !serialPort.isOpen) {
@@ -785,41 +805,40 @@ function lerPesoRapido(
 
     callbackPesoRecebido = callbackRapido;
 
-    // Listener temporário para capturar resposta
+    const finalizarLeituraRapida = (pesoEmKg: string) => {
+      pesoResolvido = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      if (parser) {
+        parser.removeListener('data', onDataRapido);
+      }
+      callbackPesoRecebido = null;
+      resolve(pesoEmKg);
+    };
+
+    // Listener temporário — aceita múltiplos pacotes até timeout
     const onDataRapido = (data: string | Buffer) => {
       if (pesoResolvido) return;
 
       let buffer: Buffer =
         typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
 
-      // Processar resposta Toledo
       if (
         buffer.length >= 3 &&
         buffer[0] === 0x02 &&
         buffer[buffer.length - 1] === 0x03
       ) {
         const pesoBruto = processarRespostaToledo(buffer);
-        if (
-          pesoBruto &&
-          !pesoBruto.match(/^[Nn]+$/) &&
-          !pesoBruto.match(/^[Ee]+$/)
-        ) {
-          const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
-          if (pesoEmKg) {
-            pesoResolvido = true;
-            if (timeoutId) clearTimeout(timeoutId);
-            if (parser) {
-              parser.removeListener('data', onDataRapido);
-            }
-            callbackPesoRecebido = null;
-            resolve(pesoEmKg);
-          }
+        const pesoEmKg = registrarEEnviarPesoBruto(pesoBruto, 'lerPesoRapido', {
+          invocarCallback: false,
+        });
+        if (pesoEmKg) {
+          finalizarLeituraRapida(pesoEmKg);
         }
       }
     };
 
     if (parser) {
-      parser.once('data', onDataRapido);
+      parser.on('data', onDataRapido);
     }
 
     // Enviar comando imediatamente
@@ -854,6 +873,8 @@ function fecharConexaoSerial(): Promise<void> {
   return new Promise((resolve) => {
     // Limpar callback de peso recebido
     callbackPesoRecebido = null;
+    limparCachePeso();
+    solicitacaoPesoEmAndamento = false;
 
     // Remover todos os listeners do parser antes de destruí-lo
     if (parser) {
@@ -1114,41 +1135,7 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
         ) {
           const pesoBruto = processarRespostaToledo(data);
           if (pesoBruto) {
-            // Verificar se é uma resposta de status/erro (ex: "NNNNN")
-            // Essas respostas indicam que a balança não está pronta ou estável
-            if (pesoBruto.match(/^[Nn]+$/) || pesoBruto.match(/^[Ee]+$/)) {
-              console.log(
-                `Resposta de status/erro recebida: "${pesoBruto}" - Balança pode não estar estável ou pronta. Aguardando estabilização...`,
-              );
-              // Não processar como peso válido, apenas logar
-              return;
-            }
-
-            // Extrair valor numérico bruto para enviar à WebView
-            const pesoNumerico = extrairValorNumericoBruto(pesoBruto);
-
-            // Converter peso para quilogramas
-            const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
-            if (pesoEmKg) {
-              console.log(
-                'Peso processado do listener direto:',
-                pesoEmKg,
-                'kg',
-              );
-              // Enviar peso para a janela principal
-              mainWindow?.webContents.send('peso-balanca', pesoEmKg);
-
-              // Enviar peso numérico bruto para a WebView
-              if (pesoNumerico !== null) {
-                enviarPesoParaWebView(pesoNumerico);
-              }
-
-              // Se há um callback esperando, chamá-lo
-              if (callbackPesoRecebido) {
-                callbackPesoRecebido(pesoEmKg);
-                callbackPesoRecebido = null;
-              }
-            }
+            registrarEEnviarPesoBruto(pesoBruto, 'serial-direto');
           }
         }
       });
@@ -1171,42 +1158,7 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
           Buffer.from(pesoBruto, 'utf8').toString('hex'),
         );
 
-        // Verificar se é uma resposta de status/erro (ex: "NNNNN")
-        // Essas respostas indicam que a balança não está pronta ou estável
-        if (pesoBruto.match(/^[Nn]+$/) || pesoBruto.match(/^[Ee]+$/)) {
-          console.log(
-            `Resposta de status/erro recebida: "${pesoBruto}" - Balança pode não estar estável ou pronta. Aguardando estabilização...`,
-          );
-          // Não processar como peso válido, apenas logar
-          return;
-        }
-
-        // Extrair valor numérico bruto para enviar à WebView
-        const pesoNumerico = extrairValorNumericoBruto(pesoBruto);
-
-        // Converter peso para quilogramas
-        const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
-        console.log('Resultado da conversão:', pesoEmKg);
-        if (!pesoEmKg) {
-          console.log('Peso inválido recebido do parser, ignorando...');
-          return;
-        }
-
-        // Enviar peso convertido para a janela principal
-        mainWindow?.webContents.send('peso-balanca', pesoEmKg);
-
-        // Enviar peso numérico bruto para a WebView
-        if (pesoNumerico !== null) {
-          enviarPesoParaWebView(pesoNumerico);
-        }
-
-        // Se há um callback esperando, chamá-lo com o peso convertido
-        // Isso resolve a Promise da função lerPeso
-        if (callbackPesoRecebido) {
-          console.log('Chamando callback com peso convertido:', pesoEmKg);
-          callbackPesoRecebido(pesoEmKg);
-          callbackPesoRecebido = null;
-        }
+        registrarEEnviarPesoBruto(pesoBruto, 'parser');
       });
 
       // Pequeno delay para garantir que a conexão está estável
@@ -1267,10 +1219,9 @@ function extrairValorNumericoBruto(pesoBruto: string): number | null {
 
   const texto = pesoBruto.trim();
 
-  // Algumas balanças Toledo usam prefixo ';' para indicar valores negativos (ex: ";0260")
-  // Nesse caso, considerar o número como negativo.
+  // Toledo: ';0260' ou '-0260' indicam valores negativos
   let sinal = 1;
-  if (texto.startsWith(';')) {
+  if (texto.startsWith(';') || /^-/.test(texto)) {
     sinal = -1;
   }
 
@@ -1323,12 +1274,75 @@ function converterPesoParaQuilogramas(pesoBruto: string): string | null {
   return pesoFormatado;
 }
 
+function limparCachePeso(): void {
+  ultimoPesoNumericoEnviado = null;
+  ultimoPesoBrutoRecebido = null;
+  ultimoPesoEmKg = null;
+}
+
+function isRespostaStatusErro(pesoBruto: string): boolean {
+  return /^[Nn]+$/.test(pesoBruto) || /^[Ee]+$/.test(pesoBruto);
+}
+
+function registrarEEnviarPesoBruto(
+  pesoBruto: string,
+  origem: string,
+  options: { invocarCallback?: boolean } = {},
+): string | null {
+  const { invocarCallback = true } = options;
+
+  if (!pesoBruto || pesoBruto.trim().length === 0) {
+    return null;
+  }
+
+  if (isRespostaStatusErro(pesoBruto)) {
+    console.log(
+      `Resposta de status/erro (${origem}): "${pesoBruto}" - balança instável.`,
+    );
+    if (
+      ultimoPesoNumericoEnviado !== null &&
+      ultimoPesoNumericoEnviado <= 0
+    ) {
+      enviarPesoParaWebView(ultimoPesoNumericoEnviado);
+    }
+    return null;
+  }
+
+  const pesoNumerico = extrairValorNumericoBruto(pesoBruto);
+  const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
+
+  if (pesoEmKg === null || pesoNumerico === null) {
+    console.log(`Peso inválido (${origem}):`, pesoBruto);
+    return null;
+  }
+
+  ultimoPesoBrutoRecebido = pesoBruto;
+  ultimoPesoEmKg = pesoEmKg;
+  ultimoPesoNumericoEnviado = pesoNumerico;
+
+  console.log(
+    `Peso processado (${origem}): ${pesoEmKg} kg (raw: ${pesoNumerico})`,
+  );
+
+  mainWindow?.webContents.send('peso-balanca', pesoEmKg);
+  enviarPesoParaWebView(pesoNumerico);
+
+  if (invocarCallback && callbackPesoRecebido) {
+    callbackPesoRecebido(pesoEmKg);
+    callbackPesoRecebido = null;
+  }
+
+  return pesoEmKg;
+}
+
 // Função para enviar peso para a WebView via postMessage
 // O formato deve ser compatível com o listener: window.addEventListener('message', ...)
 function enviarPesoParaWebView(pesoNumerico: number): void {
   if (!webViewWindow || webViewWindow.isDestroyed()) {
     return;
   }
+
+  ultimoPesoNumericoEnviado = pesoNumerico;
 
   // Garantir que o MessageChannel está inicializado antes de enviar
   if (!messageChannelInicializado) {
@@ -1506,30 +1520,13 @@ function lerPeso(
       ) {
         const pesoBruto = processarRespostaToledo(buffer);
         if (pesoBruto && pesoBruto.length > 0) {
-          // Verificar se é uma resposta de status/erro (ex: "NNNNN")
-          if (pesoBruto.match(/^[Nn]+$/) || pesoBruto.match(/^[Ee]+$/)) {
-            console.log(
-              `Resposta de status/erro recebida em modo contínuo: "${pesoBruto}" - Continuando a aguardar peso válido...`,
-            );
-            return; // Não resolver, continuar esperando
-          }
-
-          // Extrair valor numérico bruto para enviar à WebView
-          const pesoNumerico = extrairValorNumericoBruto(pesoBruto);
-
-          // Converter peso para quilogramas
-          const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
-
-          if (pesoEmKg === null) {
-            console.log(
-              'Peso inválido recebido em modo contínuo, ignorando...',
-            );
-            return; // Não resolver, continuar esperando
-          }
-
-          // Enviar peso numérico bruto para a WebView
-          if (pesoNumerico !== null) {
-            enviarPesoParaWebView(pesoNumerico);
+          const pesoEmKg = registrarEEnviarPesoBruto(
+            pesoBruto,
+            'lerPeso-continuo',
+            { invocarCallback: false },
+          );
+          if (!pesoEmKg) {
+            return;
           }
 
           dadosRecebidosModoContinuo = true;
@@ -1555,30 +1552,13 @@ function lerPeso(
             ? data.trim()
             : buffer.toString('utf8').trim();
         if (pesoBruto && pesoBruto.length > 0) {
-          // Verificar se é uma resposta de status/erro (ex: "NNNNN")
-          if (pesoBruto.match(/^[Nn]+$/) || pesoBruto.match(/^[Ee]+$/)) {
-            console.log(
-              `Resposta de status/erro recebida em modo contínuo (formato alternativo): "${pesoBruto}" - Continuando a aguardar peso válido...`,
-            );
-            return; // Não resolver, continuar esperando
-          }
-
-          // Extrair valor numérico bruto para enviar à WebView
-          const pesoNumerico = extrairValorNumericoBruto(pesoBruto);
-
-          // Converter peso para quilogramas
-          const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
-
-          if (pesoEmKg === null) {
-            console.log(
-              'Peso inválido recebido em modo contínuo (formato alternativo), ignorando...',
-            );
-            return; // Não resolver, continuar esperando
-          }
-
-          // Enviar peso numérico bruto para a WebView
-          if (pesoNumerico !== null) {
-            enviarPesoParaWebView(pesoNumerico);
+          const pesoEmKg = registrarEEnviarPesoBruto(
+            pesoBruto,
+            'lerPeso-continuo-alt',
+            { invocarCallback: false },
+          );
+          if (!pesoEmKg) {
+            return;
           }
 
           dadosRecebidosModoContinuo = true;
@@ -1777,28 +1757,12 @@ function lerPeso(
         .replace(/[\x00-\x1F\x7F]/g, '')
         .trim();
 
-      // Verificar se é uma resposta de status/erro (ex: "NNNNN")
-      if (pesoBruto.match(/^[Nn]+$/) || pesoBruto.match(/^[Ee]+$/)) {
-        console.log(
-          `Resposta de status/erro recebida no onData: "${pesoBruto}" - Continuando a aguardar peso válido...`,
-        );
-        return; // Não resolver, continuar esperando
-      }
+      const pesoEmKg = registrarEEnviarPesoBruto(pesoBruto, 'lerPeso-onData', {
+        invocarCallback: false,
+      });
 
-      // Extrair valor numérico bruto para enviar à WebView
-      const pesoNumerico = extrairValorNumericoBruto(pesoBruto);
-
-      // Converter peso para quilogramas
-      const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
-
-      if (pesoEmKg === null) {
-        console.log('Peso inválido recebido do parser no onData, ignorando...');
-        return; // Não resolver, continuar esperando
-      }
-
-      // Enviar peso numérico bruto para a WebView
-      if (pesoNumerico !== null) {
-        enviarPesoParaWebView(pesoNumerico);
+      if (!pesoEmKg) {
+        return;
       }
 
       dadosRecebidos = true;
