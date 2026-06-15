@@ -742,7 +742,7 @@ async function solicitarPesoParaWebView(): Promise<void> {
     return;
   }
 
-  // Poll da WebView: responder imediatamente com o último peso (sem bloquear na serial)
+  // Reenviar cache imediatamente (poll da WebView)
   if (ultimoPesoNumericoEnviado !== null) {
     enviarPesoParaWebView(ultimoPesoNumericoEnviado);
   }
@@ -756,17 +756,22 @@ async function solicitarPesoParaWebView(): Promise<void> {
     return;
   }
 
-  if (!comandoFuncionando) {
-    return;
-  }
-
   solicitacaoPesoEmAndamento = true;
   ultimaLeituraSerialMs = agora;
 
   try {
-    await lerPesoRapido(comandoFuncionando, TIMEOUT_LEITURA_PESO_MS);
+    if (comandoFuncionando) {
+      try {
+        await lerPesoRapido(comandoFuncionando, TIMEOUT_LEITURA_PESO_MS);
+        return;
+      } catch (error: any) {
+        console.log('lerPesoRapido timeout/erro:', error.message);
+      }
+    }
+
+    await lerPeso(TIMEOUT_LEITURA_PESO_MS, true);
   } catch (error: any) {
-    console.log('lerPesoRapido timeout/erro:', error.message);
+    console.log('lerPeso timeout/erro:', error.message);
   } finally {
     solicitacaoPesoEmAndamento = false;
   }
@@ -1128,13 +1133,7 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
         ) {
           const pesoBruto = processarRespostaToledo(data);
           if (pesoBruto) {
-            if (callbackPesoRecebido && !isRespostaStatusErro(pesoBruto)) {
-              const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
-              if (pesoEmKg) {
-                callbackPesoRecebido(pesoEmKg);
-                callbackPesoRecebido = null;
-              }
-            }
+            registrarEEnviarPesoBruto(pesoBruto, 'serial-direto');
           }
         }
       });
