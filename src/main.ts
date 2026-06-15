@@ -20,9 +20,14 @@ let messageChannelInicializado: boolean = false;
 // Cache do comando que funciona (para leituras rápidas)
 let comandoFuncionando: string | Buffer | null = null;
 const TIMEOUT_LEITURA_PESO_MS = 500;
+const INTERVALO_MIN_LEITURA_SERIAL_MS = 400;
+const DEDUPE_ENVIO_PESO_MS = 120;
 let ultimoPesoNumericoEnviado: number | null = null;
 let ultimoPesoBrutoRecebido: string | null = null;
 let ultimoPesoEmKg: string | null = null;
+let ultimoPesoEnviadoWebViewValor: number | null = null;
+let ultimoPesoEnviadoWebViewMs = 0;
+let ultimaLeituraSerialMs = 0;
 let solicitacaoPesoEmAndamento = false;
 // Flag para controlar se há instrução explícita de abrir tela inicial
 let deveAbrirTelaInicial: boolean = false;
@@ -737,43 +742,31 @@ async function solicitarPesoParaWebView(): Promise<void> {
     return;
   }
 
-  // Reenviar imediatamente o último peso conhecido (inclui zero e negativo)
+  // Poll da WebView: responder imediatamente com o último peso (sem bloquear na serial)
   if (ultimoPesoNumericoEnviado !== null) {
     enviarPesoParaWebView(ultimoPesoNumericoEnviado);
+  }
+
+  const agora = Date.now();
+  if (agora - ultimaLeituraSerialMs < INTERVALO_MIN_LEITURA_SERIAL_MS) {
+    return;
   }
 
   if (solicitacaoPesoEmAndamento) {
     return;
   }
 
+  if (!comandoFuncionando) {
+    return;
+  }
+
   solicitacaoPesoEmAndamento = true;
+  ultimaLeituraSerialMs = agora;
 
   try {
-    console.log('Solicitando peso da balança (modo rápido)...');
-
-    if (comandoFuncionando) {
-      try {
-        const pesoEmKg = await lerPesoRapido(
-          comandoFuncionando,
-          TIMEOUT_LEITURA_PESO_MS,
-        );
-        if (pesoEmKg !== null && pesoEmKg !== '') {
-          return;
-        }
-      } catch (error: any) {
-        console.log(
-          'lerPesoRapido timeout/erro, mantendo cache:',
-          error.message,
-        );
-      }
-    }
-
-    try {
-      const pesoEmKg = await lerPeso(TIMEOUT_LEITURA_PESO_MS, true);
-      console.log('Peso lido:', pesoEmKg);
-    } catch (error: any) {
-      console.log('lerPeso timeout/erro, mantendo cache:', error.message);
-    }
+    await lerPesoRapido(comandoFuncionando, TIMEOUT_LEITURA_PESO_MS);
+  } catch (error: any) {
+    console.log('lerPesoRapido timeout/erro:', error.message);
   } finally {
     solicitacaoPesoEmAndamento = false;
   }
@@ -1135,7 +1128,13 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
         ) {
           const pesoBruto = processarRespostaToledo(data);
           if (pesoBruto) {
-            registrarEEnviarPesoBruto(pesoBruto, 'serial-direto');
+            if (callbackPesoRecebido && !isRespostaStatusErro(pesoBruto)) {
+              const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
+              if (pesoEmKg) {
+                callbackPesoRecebido(pesoEmKg);
+                callbackPesoRecebido = null;
+              }
+            }
           }
         }
       });
@@ -1278,6 +1277,9 @@ function limparCachePeso(): void {
   ultimoPesoNumericoEnviado = null;
   ultimoPesoBrutoRecebido = null;
   ultimoPesoEmKg = null;
+  ultimoPesoEnviadoWebViewValor = null;
+  ultimoPesoEnviadoWebViewMs = 0;
+  ultimaLeituraSerialMs = 0;
 }
 
 function isRespostaStatusErro(pesoBruto: string): boolean {
@@ -1299,12 +1301,6 @@ function registrarEEnviarPesoBruto(
     console.log(
       `Resposta de status/erro (${origem}): "${pesoBruto}" - balança instável.`,
     );
-    if (
-      ultimoPesoNumericoEnviado !== null &&
-      ultimoPesoNumericoEnviado <= 0
-    ) {
-      enviarPesoParaWebView(ultimoPesoNumericoEnviado);
-    }
     return null;
   }
 
@@ -1314,6 +1310,17 @@ function registrarEEnviarPesoBruto(
   if (pesoEmKg === null || pesoNumerico === null) {
     console.log(`Peso inválido (${origem}):`, pesoBruto);
     return null;
+  }
+
+  if (
+    ultimoPesoNumericoEnviado === pesoNumerico &&
+    ultimoPesoBrutoRecebido === pesoBruto
+  ) {
+    if (invocarCallback && callbackPesoRecebido) {
+      callbackPesoRecebido(pesoEmKg);
+      callbackPesoRecebido = null;
+    }
+    return pesoEmKg;
   }
 
   ultimoPesoBrutoRecebido = pesoBruto;
@@ -1342,7 +1349,17 @@ function enviarPesoParaWebView(pesoNumerico: number): void {
     return;
   }
 
+  const agora = Date.now();
+  if (
+    ultimoPesoEnviadoWebViewValor === pesoNumerico &&
+    agora - ultimoPesoEnviadoWebViewMs < DEDUPE_ENVIO_PESO_MS
+  ) {
+    return;
+  }
+
   ultimoPesoNumericoEnviado = pesoNumerico;
+  ultimoPesoEnviadoWebViewValor = pesoNumerico;
+  ultimoPesoEnviadoWebViewMs = agora;
 
   // Garantir que o MessageChannel está inicializado antes de enviar
   if (!messageChannelInicializado) {
