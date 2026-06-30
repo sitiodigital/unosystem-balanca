@@ -35,6 +35,15 @@ let deveAbrirTelaInicial: boolean = false;
 let podeMostrarJanelaPrincipal: boolean = false;
 // Flag para controlar se o app está encerrando (evita loops infinitos)
 let isQuitting: boolean = false;
+// Mensagem de erro de conexão pendente para exibir na tela de configurações
+let mensagemErroConexaoPendente: {
+  mensagem: string;
+  endereco?: string;
+} | null = null;
+
+const TIMEOUT_VALIDACAO_URL_MS = 10000;
+// ERR_ABORTED – navegação cancelada (não é falha de conexão)
+const CODIGOS_ERRO_CARREGAMENTO_IGNORAR = new Set([-3]);
 // Armazenar IDs dos timers recursivos para poder cancelá-los durante o encerramento
 let timerVerificarSolicitacao: NodeJS.Timeout | null = null;
 let timerVerificarNavegacao: NodeJS.Timeout | null = null;
@@ -149,6 +158,7 @@ function createWindow() {
         mainWindow.show();
         mainWindow.setFullScreen(true);
         mainWindow.focus();
+        enviarErroConexaoPendente();
       }
       return;
     }
@@ -190,11 +200,192 @@ function createWindow() {
   });
 }
 
-function criarWebView(enderecoSistema: string) {
+function formatarMensagemErroConexao(
+  url: string,
+  detalhe?: string,
+): string {
+  const motivo =
+    detalhe && detalhe.trim().length > 0
+      ? detalhe
+      : 'Verifique se o servidor está ligado e se o IP, porta e URL estão corretos';
+  return `Não foi possível conectar ao endereço configurado (${url}). ${motivo}.`;
+}
+
+function formatarErroFetch(error: unknown, url: string): string {
+  const message =
+    error instanceof Error ? error.message : 'Erro de rede desconhecido';
+
+  if (
+    message.includes('aborted') ||
+    message.includes('AbortError') ||
+    message.includes('Timeout') ||
+    message.includes('UND_ERR_CONNECT_TIMEOUT')
+  ) {
+    return formatarMensagemErroConexao(
+      url,
+      'Tempo de conexão esgotado',
+    );
+  }
+
+  if (message.includes('ECONNREFUSED')) {
+    return formatarMensagemErroConexao(url, 'Conexão recusada pelo servidor');
+  }
+
+  if (message.includes('ENOTFOUND') || message.includes('getaddrinfo')) {
+    return formatarMensagemErroConexao(
+      url,
+      'Endereço não encontrado (DNS)',
+    );
+  }
+
+  if (message.includes('EHOSTUNREACH') || message.includes('ENETUNREACH')) {
+    return formatarMensagemErroConexao(url, 'Endereço inacessível');
+  }
+
+  return formatarMensagemErroConexao(url, message);
+}
+
+function formatarErroCarregamentoWebView(
+  errorCode: number,
+  errorDescription: string,
+  url: string,
+): string {
+  const mensagensPorCodigo: Record<number, string> = {
+    [-102]: 'Conexão recusada pelo servidor',
+    [-105]: 'Endereço não encontrado (DNS)',
+    [-106]: 'Conexão com a internet indisponível',
+    [-109]: 'Endereço inacessível',
+    [-118]: 'Tempo de conexão esgotado',
+    [-200]: 'Certificado SSL inválido',
+    [-201]: 'Erro de certificado SSL',
+  };
+
+  const detalhe =
+    mensagensPorCodigo[errorCode] ||
+    (errorDescription && errorDescription.trim().length > 0
+      ? errorDescription
+      : undefined);
+
+  return formatarMensagemErroConexao(url, detalhe);
+}
+
+async function validarUrlAcessivel(
+  url: string,
+): Promise<{ acessivel: boolean; erro?: string }> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(
+    () => controller.abort(),
+    TIMEOUT_VALIDACAO_URL_MS,
+  );
+
+  try {
+    await fetch(url, {
+      method: 'GET',
+      signal: controller.signal,
+      redirect: 'follow',
+    });
+    return { acessivel: true };
+  } catch (error) {
+    console.warn('Validação de URL falhou:', error);
+    return { acessivel: false, erro: formatarErroFetch(error, url) };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function enviarErroConexaoPendente(): void {
+  if (
+    !mensagemErroConexaoPendente ||
+    !mainWindow ||
+    mainWindow.isDestroyed()
+  ) {
+    return;
+  }
+
+  mainWindow.webContents.send(
+    'erro-conexao-sistema',
+    mensagemErroConexaoPendente,
+  );
+  mensagemErroConexaoPendente = null;
+}
+
+function notificarErroConexaoSistema(mensagem: string, endereco?: string): void {
+  const payload = { mensagem, endereco };
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('erro-conexao-sistema', payload);
+    return;
+  }
+
+  mensagemErroConexaoPendente = payload;
+}
+
+function destruirWebViewSemEncerrarApp(): void {
+  if (timerVerificarNavegacao) {
+    clearTimeout(timerVerificarNavegacao);
+    timerVerificarNavegacao = null;
+  }
+  if (timerVerificarSolicitacao) {
+    clearTimeout(timerVerificarSolicitacao);
+    timerVerificarSolicitacao = null;
+  }
+  if (timerVerificarESC) {
+    clearTimeout(timerVerificarESC);
+    timerVerificarESC = null;
+  }
+
+  if (webViewWindow && !webViewWindow.isDestroyed()) {
+    webViewWindow.removeAllListeners('close');
+    webViewWindow.webContents.removeAllListeners();
+    webViewWindow.removeAllListeners();
+    webViewWindow.destroy();
+    webViewWindow = null;
+    messageChannelInicializado = false;
+    console.log('WebView descartada após falha de carregamento');
+  }
+}
+
+function retornarParaTelaConfiguracao(
+  mensagemErro?: string,
+  enderecoFalho?: string,
+  notificarRenderer = true,
+): void {
+  deveAbrirTelaInicial = true;
+  podeMostrarJanelaPrincipal = true;
+
+  destruirWebViewSemEncerrarApp();
+
+  if (mensagemErro && notificarRenderer) {
+    notificarErroConexaoSistema(mensagemErro, enderecoFalho);
+  }
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+    mainWindow.setFullScreen(true);
+    mainWindow.focus();
+    if (notificarRenderer) {
+      enviarErroConexaoPendente();
+    }
+    console.log('Retornando para tela de configurações após falha de conexão');
+    return;
+  }
+
+  createWindow();
+}
+
+interface CriarWebViewOpcoes {
+  notificarErro?: boolean;
+}
+
+function criarWebView(
+  enderecoSistema: string,
+  opcoes: CriarWebViewOpcoes = {},
+): Promise<boolean> {
+  const notificarErro = opcoes.notificarErro !== false;
   if (webViewWindow) {
     webViewWindow.focus();
     webViewWindow.show();
-    return;
+    return Promise.resolve(true);
   }
 
   webViewWindow = new BrowserWindow({
@@ -202,7 +393,7 @@ function criarWebView(enderecoSistema: string) {
     height: 800,
     fullscreen: true, // Abrir em tela cheia
     autoHideMenuBar: true, // Esconder barra de menu automaticamente
-    show: true, // Garantir que a janela seja exibida
+    show: false, // Exibir somente após validar carregamento
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -216,33 +407,71 @@ function criarWebView(enderecoSistema: string) {
   // Remover menu completamente
   webViewWindow.setMenuBarVisibility(false);
 
-  // Garantir que a WebView seja exibida e focada
-  webViewWindow.show();
-  webViewWindow.focus();
-
-  // Ocultar janela principal quando WebView for criada
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.hide();
-    console.log('Janela principal ocultada ao criar WebView');
-  }
-
   console.log('Criando WebView com endereço:', enderecoSistema);
-  webViewWindow.loadURL(enderecoSistema);
-
-  // Garantir que a WebView seja exibida quando estiver pronta
-  webViewWindow.once('ready-to-show', () => {
-    if (webViewWindow && !webViewWindow.isDestroyed()) {
-      webViewWindow.show();
-      webViewWindow.focus();
-      console.log('WebView pronta e exibida');
-    }
-  });
 
   // Resetar flag quando criar nova WebView
   messageChannelInicializado = false;
 
+  let carregamentoConcluido = false;
+  let falhaTratada = false;
+
+  const tratarFalhaCarregamento = (
+    errorCode: number,
+    errorDescription: string,
+    validatedURL: string,
+    isMainFrame: boolean,
+  ) => {
+    if (!isMainFrame || carregamentoConcluido || falhaTratada) {
+      return;
+    }
+
+    if (CODIGOS_ERRO_CARREGAMENTO_IGNORAR.has(errorCode)) {
+      return;
+    }
+
+    falhaTratada = true;
+    const mensagem = formatarErroCarregamentoWebView(
+      errorCode,
+      errorDescription,
+      enderecoSistema,
+    );
+    console.error(
+      `Falha ao carregar WebView [${errorCode}] ${errorDescription} (${validatedURL})`,
+    );
+    retornarParaTelaConfiguracao(
+      mensagem,
+      enderecoSistema,
+      notificarErro,
+    );
+  };
+
+  webViewWindow.webContents.on(
+    'did-fail-load',
+    (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      tratarFalhaCarregamento(
+        errorCode,
+        errorDescription,
+        validatedURL,
+        isMainFrame,
+      );
+    },
+  );
+
+  webViewWindow.webContents.on(
+    'did-fail-provisional-load',
+    (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      tratarFalhaCarregamento(
+        errorCode,
+        errorDescription,
+        validatedURL,
+        isMainFrame,
+      );
+    },
+  );
+
   // Quando a página carregar completamente, inicializar o MessageChannel
   webViewWindow.webContents.on('did-finish-load', () => {
+    carregamentoConcluido = true;
     // Resetar flag quando a página recarregar
     messageChannelInicializado = false;
     // Injetar ponto de venda no contexto da WebView (para pedido-lanchonete/index.js)
@@ -284,6 +513,38 @@ function criarWebView(enderecoSistema: string) {
     webViewWindow = null;
     messageChannelInicializado = false;
   });
+
+  return webViewWindow
+    .loadURL(enderecoSistema)
+    .then(() => {
+      if (falhaTratada) {
+        return false;
+      }
+
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.hide();
+        console.log('Janela principal ocultada após WebView carregar com sucesso');
+      }
+
+      if (webViewWindow && !webViewWindow.isDestroyed()) {
+        webViewWindow.show();
+        webViewWindow.focus();
+        console.log('WebView carregada e exibida com sucesso');
+      }
+
+      return true;
+    })
+    .catch((error: Error) => {
+      if (!falhaTratada) {
+        tratarFalhaCarregamento(
+          -1,
+          error.message || 'Erro ao carregar URL',
+          enderecoSistema,
+          true,
+        );
+      }
+      return false;
+    });
 }
 
 // Função para inicializar o MessageChannel na WebView
@@ -1930,6 +2191,28 @@ async function verificarERedirecionarAutomaticamente(): Promise<boolean> {
     'Configuração válida encontrada, redirecionando automaticamente para WebView...',
   );
 
+  const validacaoUrl = await validarUrlAcessivel(config.enderecoSistema);
+  if (!validacaoUrl.acessivel) {
+    console.warn(
+      'Endereço do sistema inacessível, permanecendo na tela de configurações:',
+      validacaoUrl.erro,
+    );
+    podeMostrarJanelaPrincipal = true;
+    deveAbrirTelaInicial = true;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.setFullScreen(true);
+      mainWindow.focus();
+      notificarErroConexaoSistema(
+        validacaoUrl.erro ||
+          formatarMensagemErroConexao(config.enderecoSistema),
+        config.enderecoSistema,
+      );
+      enviarErroConexaoPendente();
+    }
+    return false;
+  }
+
   // Converter configuração para SerialConfig
   const serialConfig: SerialConfig = {
     port: config.portaSerial,
@@ -1940,23 +2223,25 @@ async function verificarERedirecionarAutomaticamente(): Promise<boolean> {
   };
 
   try {
-    // Ocultar janela principal antes de criar WebView
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.hide();
-      console.log('Janela principal ocultada antes de criar WebView');
-    }
-
     // Abrir conexão serial
     await abrirConexaoSerial(serialConfig);
 
     // Criar WebView
-    criarWebView(config.enderecoSistema);
+    const webViewAberta = await criarWebView(config.enderecoSistema);
+    if (!webViewAberta) {
+      console.warn(
+        'Falha ao carregar WebView, retornando para tela de configurações',
+      );
+      return false;
+    }
 
     console.log('WebView criada e exibida com sucesso');
     return true; // Redirecionou com sucesso
   } catch (error: any) {
     console.error('Erro ao redirecionar automaticamente:', error);
     // Se houver erro, mostrar a janela principal novamente
+    podeMostrarJanelaPrincipal = true;
+    deveAbrirTelaInicial = true;
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show();
       mainWindow.focus();
@@ -2023,12 +2308,25 @@ ipcMain.handle(
   'buscar-pontos-lanchonete',
   async (_: unknown, baseUrl: string): Promise<PontoLanchoneteItem[]> => {
     const url = baseUrl.replace(/\/+$/, '') + '/index/pontos-lanchonete';
-    const res = await fetch(url, { method: 'GET' });
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      TIMEOUT_VALIDACAO_URL_MS,
+    );
+
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      }
+      const data = await res.json();
+      return Array.isArray(data) ? data : [];
+    } finally {
+      clearTimeout(timeoutId);
     }
-    const data = await res.json();
-    return Array.isArray(data) ? data : [];
   },
 );
 
@@ -2074,11 +2372,30 @@ ipcMain.handle(
         pontoVenda !== undefined && pontoVenda !== '' ? pontoVenda : null,
       );
 
+      const validacaoUrl = await validarUrlAcessivel(enderecoSistema);
+      if (!validacaoUrl.acessivel) {
+        return {
+          sucesso: false,
+          erro:
+            validacaoUrl.erro ||
+            formatarMensagemErroConexao(enderecoSistema),
+        };
+      }
+
       // Abrir conexão serial
       await abrirConexaoSerial(config);
 
       // Criar WebView
-      criarWebView(enderecoSistema);
+      const webViewAberta = await criarWebView(enderecoSistema, {
+        notificarErro: false,
+      });
+      if (!webViewAberta) {
+        await fecharConexaoSerial();
+        return {
+          sucesso: false,
+          erro: formatarMensagemErroConexao(enderecoSistema),
+        };
+      }
 
       // Ocultar a janela principal após conectar com sucesso
       if (mainWindow && !mainWindow.isDestroyed()) {

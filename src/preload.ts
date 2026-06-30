@@ -52,4 +52,16 @@ contextBridge.exposeInMainWorld('balanca', {
   getPontoVenda: () => ipcRenderer.invoke('get-ponto-venda'),
   setPontoVenda: (pontoVendaId: string | null) =>
     ipcRenderer.invoke('set-ponto-venda', pontoVendaId),
+
+  // Notificação de falha ao conectar ao endereço do sistema
+  onErroConexaoSistema: (
+    callback: (payload: { mensagem: string; endereco?: string }) => void,
+  ) => {
+    ipcRenderer.on(
+      'erro-conexao-sistema',
+      (_event, payload: { mensagem: string; endereco?: string }) => {
+        callback(payload);
+      },
+    );
+  },
 });

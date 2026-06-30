@@ -28,6 +28,9 @@ declare global {
       >;
       getPontoVenda: () => Promise<string | null>;
       setPontoVenda: (pontoVendaId: string | null) => Promise<void>;
+      onErroConexaoSistema: (
+        callback: (payload: { mensagem: string; endereco?: string }) => void,
+      ) => void;
     };
   }
 
@@ -428,6 +431,12 @@ if (document.readyState === 'loading') {
 
 function inicializarAplicacao() {
   console.log('Inicializando aplicação...');
+
+  if (window.balanca.onErroConexaoSistema) {
+    window.balanca.onErroConexaoSistema(({ mensagem }) => {
+      mostrarMensagem(mensagem, 'error');
+    });
+  }
 
   // Carregar configuração salva ao iniciar
   const savedConfig = carregarConfiguracao();
