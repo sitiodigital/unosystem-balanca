@@ -1208,39 +1208,54 @@ function enviarComando(comando: string | Buffer): Promise<void> {
 }
 
 // Função para extrair valor numérico bruto do peso
-// Entrada: string com dígitos (ex: "00415", "ST,GS, 00415 kg", ";0260", etc.)
-// Saída: número inteiro (ex: 415, -260) ou null se inválido
+// Entrada: string com dígitos (ex: "00415", "ST,GS, 00415 kg", ";0260", "-0.101", etc.)
+// Saída: número inteiro em gramas/milésimos de kg (ex: 415, -101) ou null se inválido
 function extrairValorNumericoBruto(pesoBruto: string): number | null {
   if (!pesoBruto || typeof pesoBruto !== 'string') {
     return null;
   }
 
   const texto = pesoBruto.trim();
-
-  // Toledo: ';0260' ou '-0260' indicam valores negativos
-  let sinal = 1;
-  if (texto.startsWith(';') || /^-/.test(texto)) {
-    sinal = -1;
+  if (!texto) {
+    return null;
   }
 
-  // Extrair apenas dígitos numéricos
-  const matchDigitos = texto.match(/\d+/);
+  // Toledo: ';' ou '-' indicam valores negativos — no início ou antes dos dígitos do peso
+  const negativo =
+    /^[;-]/.test(texto) ||
+    /[;,]\s*[;-]/.test(texto) ||
+    /;\s*\d/.test(texto);
 
+  // Formato decimal como no visor (ex: -0.101, 12.345, 0.101)
+  const matchDecimal = texto.match(/(\d+)[.,](\d+)/);
+  if (matchDecimal) {
+    const valorDecimal = parseFloat(
+      `${matchDecimal[1]}.${matchDecimal[2]}`,
+    );
+    if (!isNaN(valorDecimal)) {
+      const valorInteiro = Math.round(valorDecimal * 1000) * (negativo ? -1 : 1);
+      if (Math.abs(valorInteiro) <= 999999) {
+        return valorInteiro;
+      }
+      return null;
+    }
+  }
+
+  // Formato inteiro sem separador decimal (ex: "00415", ";0101", "-0101")
+  const matchDigitos = texto.match(/\d+/);
   if (!matchDigitos || matchDigitos[0].length === 0) {
     return null;
   }
 
-  const digitos = matchDigitos[0];
-
-  // Converter para número e aplicar sinal
-  let valorNumerico = parseInt(digitos, 10);
+  let valorNumerico = parseInt(matchDigitos[0], 10);
   if (isNaN(valorNumerico)) {
     return null;
   }
 
-  valorNumerico = valorNumerico * sinal;
+  if (negativo) {
+    valorNumerico = -valorNumerico;
+  }
 
-  // Verificar se o valor é razoável (entre -999999 e 999999 para evitar valores absurdos)
   if (Math.abs(valorNumerico) > 999999) {
     return null;
   }
