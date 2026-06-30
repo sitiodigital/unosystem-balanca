@@ -13,9 +13,11 @@
 <body>
   <div class="container">
     <img src="unosystem.svg" alt="UnoSystem" class="logo" />
-    <h1>Configuração da Balança <br><small id="appVersion" style="font-size: 10px; font-weight: normal;">Versão
-        …</small>
-    </h1>
+    <h1>Configuração da Balança</h1>
+    <div class="version-row">
+      <small id="appVersion" class="app-version">Versão …</small>
+      <button type="button" id="btnCheckUpdate" class="btn-check-update">Verificar atualizações</button>
+    </div>
 
     <form id="configForm">
       <div class="form-group">
@@ -83,6 +85,15 @@
         <button type="submit" id="btnConectar" class="btn-success">Salvar e Prosseguir</button>
       </div>
     </form>
+
+    <div id="updateBanner" class="update-banner" hidden>
+      <p id="updateMessage" class="update-message"></p>
+      <progress id="updateProgress" class="update-progress" value="0" max="100" hidden></progress>
+      <div class="update-actions">
+        <button type="button" id="btnDownloadUpdate" class="btn-update" hidden>Atualizar</button>
+        <button type="button" id="btnInstallUpdate" class="btn-update btn-update-install" hidden>Reiniciar agora</button>
+      </div>
+    </div>
 
     <div id="statusMessage" class="status-message"></div>
   </div>

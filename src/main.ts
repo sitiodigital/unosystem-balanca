@@ -4,6 +4,10 @@ import Store from 'electron-store';
 import { SerialPort } from 'serialport';
 import { ReadlineParser } from '@serialport/parser-readline';
 import { Transform } from 'stream';
+import {
+  disposeAutoUpdater,
+  initAutoUpdater,
+} from './updater/auto-updater.service';
 
 const store = new Store<{ pontoVendaBalanca: string | null }>({
   name: 'balanca-config',
@@ -1191,7 +1195,10 @@ async function limparRecursosCompletamente(): Promise<void> {
   // Marcar que o app está encerrando (evita loops infinitos)
   isQuitting = true;
 
-  // 1. Cancelar todos os timers recursivos
+  // 1. Cancelar verificação periódica de atualizações
+  disposeAutoUpdater();
+
+  // 2. Cancelar todos os timers recursivos
   if (timerVerificarSolicitacao) {
     clearTimeout(timerVerificarSolicitacao);
     timerVerificarSolicitacao = null;
@@ -2839,6 +2846,7 @@ if (gotTheLock) {
     Menu.setApplicationMenu(null);
 
     createWindow();
+    initAutoUpdater(() => mainWindow);
 
     /**
      * Evento window-all-closed: disparado quando todas as janelas são fechadas

@@ -10,6 +10,7 @@
     "start": "pnpm build && pnpm exec electron .",
     "build:win": "pnpm build && node scripts/build-win.js",
     "build:win:local": "pnpm build && electron-builder --win --x64",
+    "release:win": "pnpm build && electron-builder --win --x64 --publish always",
     "fix:electron": "node scripts/fix-electron.js",
     "fix:electron:win": "powershell -ExecutionPolicy Bypass -File scripts/fix-electron.ps1",
     "install:electron": "node scripts/force-install-electron.js",
@@ -18,6 +19,10 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sitiodigital/unosystem-balanca.git"
+  },
   "packageManager": "pnpm@10.19.0",
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -26,7 +31,9 @@
   },
   "dependencies": {
     "@serialport/parser-readline": "^13.0.0",
+    "electron-log": "^5.4.3",
     "electron-store": "^10.0.0",
+    "electron-updater": "^6.6.2",
     "serialport": "^13.0.0"
   },
   "devDependencies": {
@@ -51,6 +58,14 @@
     "files": [
       "dist/**/*",
       "package.json"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "sitiodigital",
+        "repo": "unosystem-balanca",
+        "releaseType": "release"
+      }
     ],
     "win": {
       "target": [
@@ -77,7 +92,8 @@
       "createStartMenuShortcut": true,
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico",
-      "installerHeaderIcon": "assets/icon.ico"
+      "installerHeaderIcon": "assets/icon.ico",
+      "differentialPackage": true
     },
     "nodeGypRebuild": false,
     "npmRebuild": false,

@@ -1,4 +1,12 @@
 declare global {
+  type UpdaterUiPayload =
+    | { type: 'checking' }
+    | { type: 'available'; version: string }
+    | { type: 'not-available' }
+    | { type: 'progress'; percent: number }
+    | { type: 'downloaded'; version: string }
+    | { type: 'error'; message: string };
+
   interface Window {
     balanca: {
       listarPortas: () => Promise<
@@ -29,6 +37,10 @@ declare global {
       getPontoVenda: () => Promise<string | null>;
       setPontoVenda: (pontoVendaId: string | null) => Promise<void>;
       getVersion: () => Promise<string>;
+      onUpdaterEvent: (callback: (payload: UpdaterUiPayload) => void) => void;
+      downloadUpdate: () => Promise<{ sucesso: boolean; erro?: string }>;
+      installUpdate: () => Promise<{ sucesso: boolean; erro?: string }>;
+      checkForUpdates: () => Promise<{ sucesso: boolean; erro?: string }>;
       onErroConexaoSistema: (
         callback: (payload: { mensagem: string; endereco?: string }) => void,
       ) => void;
@@ -430,6 +442,124 @@ if (document.readyState === 'loading') {
   inicializarAplicacao();
 }
 
+const updateBanner = document.getElementById('updateBanner') as HTMLDivElement;
+const updateMessage = document.getElementById('updateMessage') as HTMLParagraphElement;
+const updateProgress = document.getElementById('updateProgress') as HTMLProgressElement;
+const btnDownloadUpdate = document.getElementById('btnDownloadUpdate') as HTMLButtonElement;
+const btnInstallUpdate = document.getElementById('btnInstallUpdate') as HTMLButtonElement;
+const btnCheckUpdate = document.getElementById('btnCheckUpdate') as HTMLButtonElement;
+
+let verificacaoManualAtiva = false;
+
+function configurarAutoUpdater(): void {
+  if (!window.balanca.onUpdaterEvent) {
+    btnCheckUpdate.hidden = true;
+    return;
+  }
+
+  if (!window.balanca.checkForUpdates) {
+    btnCheckUpdate.hidden = true;
+    return;
+  }
+
+  window.balanca.onUpdaterEvent((payload) => {
+    switch (payload.type) {
+      case 'checking':
+        if (verificacaoManualAtiva) {
+          updateBanner.hidden = false;
+          updateMessage.textContent = 'Verificando atualizações…';
+          updateProgress.hidden = true;
+          btnDownloadUpdate.hidden = true;
+          btnInstallUpdate.hidden = true;
+        }
+        break;
+      case 'not-available':
+        if (verificacaoManualAtiva) {
+          updateBanner.hidden = false;
+          updateMessage.textContent = 'Você já está na versão mais recente.';
+          updateProgress.hidden = true;
+          btnDownloadUpdate.hidden = true;
+          btnInstallUpdate.hidden = true;
+          btnCheckUpdate.disabled = false;
+          verificacaoManualAtiva = false;
+        } else {
+          updateBanner.hidden = true;
+        }
+        break;
+      case 'available':
+        verificacaoManualAtiva = false;
+        btnCheckUpdate.disabled = false;
+        updateBanner.hidden = false;
+        updateMessage.textContent =
+          'Uma nova versão está disponível. Clique aqui para atualizar.';
+        updateProgress.hidden = true;
+        btnDownloadUpdate.hidden = false;
+        btnInstallUpdate.hidden = true;
+        break;
+      case 'progress':
+        updateBanner.hidden = false;
+        updateMessage.textContent = `Baixando atualização… ${payload.percent}%`;
+        updateProgress.hidden = false;
+        updateProgress.value = payload.percent;
+        btnDownloadUpdate.hidden = true;
+        btnInstallUpdate.hidden = true;
+        break;
+      case 'downloaded':
+        updateBanner.hidden = false;
+        updateMessage.textContent =
+          'Atualização pronta. Reinicie o aplicativo para concluir a instalação.';
+        updateProgress.hidden = true;
+        btnDownloadUpdate.hidden = true;
+        btnInstallUpdate.hidden = false;
+        break;
+      case 'error':
+        verificacaoManualAtiva = false;
+        btnCheckUpdate.disabled = false;
+        updateBanner.hidden = false;
+        updateMessage.textContent = payload.message;
+        updateProgress.hidden = true;
+        btnDownloadUpdate.hidden = false;
+        btnInstallUpdate.hidden = true;
+        break;
+    }
+  });
+
+  btnDownloadUpdate.addEventListener('click', async () => {
+    btnDownloadUpdate.disabled = true;
+    updateMessage.textContent = 'Iniciando download da atualização…';
+    updateBanner.hidden = false;
+
+    const resultado = await window.balanca.downloadUpdate();
+    if (!resultado.sucesso) {
+      updateMessage.textContent =
+        resultado.erro ?? 'Não foi possível baixar a atualização.';
+      btnDownloadUpdate.disabled = false;
+    }
+  });
+
+  btnInstallUpdate.addEventListener('click', () => {
+    void window.balanca.installUpdate();
+  });
+
+  btnCheckUpdate.addEventListener('click', async () => {
+    verificacaoManualAtiva = true;
+    btnCheckUpdate.disabled = true;
+    updateBanner.hidden = false;
+    updateMessage.textContent = 'Verificando atualizações…';
+    updateProgress.hidden = true;
+    btnDownloadUpdate.hidden = true;
+    btnInstallUpdate.hidden = true;
+
+    const resultado = await window.balanca.checkForUpdates();
+    if (!resultado.sucesso) {
+      verificacaoManualAtiva = false;
+      btnCheckUpdate.disabled = false;
+      updateMessage.textContent =
+        resultado.erro ?? 'Não foi possível verificar atualizações.';
+    }
+  });
+}
+
 function inicializarAplicacao() {
   console.log('Inicializando aplicação...');
 
@@ -439,6 +569,8 @@ function inicializarAplicacao() {
       if (el) el.textContent = `Versão ${version}`;
     });
   }
+
+  configurarAutoUpdater();
 
   if (window.balanca.onErroConexaoSistema) {
     window.balanca.onErroConexaoSistema(({ mensagem }) => {

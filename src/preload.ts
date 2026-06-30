@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { UpdaterUiPayload } from './updater/updater.types';
 
 export interface SerialConfig {
   port: string;
@@ -54,6 +55,27 @@ contextBridge.exposeInMainWorld('balanca', {
     ipcRenderer.invoke('set-ponto-venda', pontoVendaId),
 
   getVersion: () => ipcRenderer.invoke('get-app-version') as Promise<string>,
+
+  onUpdaterEvent: (callback: (payload: UpdaterUiPayload) => void) => {
+    ipcRenderer.on('updater:event', (_event, payload: UpdaterUiPayload) =>
+      callback(payload),
+    );
+  },
+  downloadUpdate: () =>
+    ipcRenderer.invoke('updater-download') as Promise<{
+      sucesso: boolean;
+      erro?: string;
+    }>,
+  installUpdate: () =>
+    ipcRenderer.invoke('updater-install') as Promise<{
+      sucesso: boolean;
+      erro?: string;
+    }>,
+  checkForUpdates: () =>
+    ipcRenderer.invoke('updater-check-now') as Promise<{
+      sucesso: boolean;
+      erro?: string;
+    }>,
 
   // Notificação de falha ao conectar ao endereço do sistema
   onErroConexaoSistema: (
