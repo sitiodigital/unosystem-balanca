@@ -1078,21 +1078,11 @@ function lerPesoRapido(
     const onDataRapido = (data: string | Buffer) => {
       if (pesoResolvido) return;
 
-      let buffer: Buffer =
-        typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
-
-      if (
-        buffer.length >= 3 &&
-        buffer[0] === 0x02 &&
-        buffer[buffer.length - 1] === 0x03
-      ) {
-        const pesoBruto = processarRespostaToledo(buffer);
-        const pesoEmKg = registrarEEnviarPesoBruto(pesoBruto, 'lerPesoRapido', {
-          invocarCallback: false,
-        });
-        if (pesoEmKg) {
-          finalizarLeituraRapida(pesoEmKg);
-        }
+      const pesoEmKg = processarPacoteParserLerPeso(data, 'lerPesoRapido', {
+        invocarCallback: false,
+      });
+      if (pesoEmKg) {
+        finalizarLeituraRapida(pesoEmKg);
       }
     };
 
@@ -1386,17 +1376,7 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
           '\n==========================================',
         );
 
-        // Processar resposta Toledo imediatamente se estiver no formato STX...ETX
-        if (
-          data.length >= 3 &&
-          data[0] === 0x02 &&
-          data[data.length - 1] === 0x03
-        ) {
-          const pesoBruto = processarRespostaToledo(data);
-          if (pesoBruto) {
-            registrarEEnviarPesoBruto(pesoBruto, 'serial-direto');
-          }
-        }
+        processarDadosSerialRecebidos(data, 'serial-direto');
       });
 
       // Toledo pode usar ETX (0x03) como delimitador no formato STX...ETX
@@ -1468,6 +1448,81 @@ function enviarComando(comando: string | Buffer): Promise<void> {
   });
 }
 
+// Função para extrair segmentos de peso de um buffer serial bruto
+function extrairSegmentosPesoDeBuffer(buffer: Buffer): string[] {
+  const segmentos: string[] = [];
+
+  if (buffer.length === 0) {
+    return segmentos;
+  }
+
+  // STX...ETX (frame completo em um chunk)
+  if (buffer.length >= 3 && buffer[0] === 0x02) {
+    const etxIdx = buffer.indexOf(0x03);
+    if (etxIdx > 0) {
+      segmentos.push(buffer.slice(1, etxIdx).toString('utf8').trim());
+    }
+  }
+
+  // Terminado em ETX sem STX (ex: ;0101\x03 ou -0101\x03)
+  if (buffer.length >= 2 && buffer[buffer.length - 1] === 0x03) {
+    const conteudo = buffer
+      .slice(0, -1)
+      .toString('utf8')
+      .replace(/[\x00-\x1F\x7F]/g, '')
+      .trim();
+    if (conteudo.length > 0) {
+      segmentos.push(conteudo);
+    }
+  }
+
+  // Linhas CRLF / CR / LF (modo contínuo Toledo — comum em pesos negativos)
+  const texto = buffer.toString('utf8');
+  for (const linha of texto.split(/\r\n|\r|\n/)) {
+    const limpo = linha.replace(/[\x00-\x1F\x7F]/g, '').trim();
+    if (limpo.length > 0) {
+      segmentos.push(limpo);
+    }
+  }
+
+  return [...new Set(segmentos)];
+}
+
+function processarDadosSerialRecebidos(data: Buffer, origem: string): void {
+  const segmentos = extrairSegmentosPesoDeBuffer(data);
+  for (const segmento of segmentos) {
+    registrarEEnviarPesoBruto(segmento, origem);
+  }
+}
+
+function processarPacoteParserLerPeso(
+  data: string | Buffer,
+  origem: string,
+  options: { invocarCallback?: boolean } = {},
+): string | null {
+  let buffer: Buffer =
+    typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
+
+  if (
+    buffer.length >= 3 &&
+    buffer[0] === 0x02 &&
+    buffer[buffer.length - 1] === 0x03
+  ) {
+    const pesoBruto = processarRespostaToledo(buffer);
+    return registrarEEnviarPesoBruto(pesoBruto, origem, options);
+  }
+
+  const segmentos = extrairSegmentosPesoDeBuffer(buffer);
+  for (const segmento of segmentos) {
+    const pesoEmKg = registrarEEnviarPesoBruto(segmento, `${origem}-alt`, options);
+    if (pesoEmKg) {
+      return pesoEmKg;
+    }
+  }
+
+  return null;
+}
+
 // Função para extrair valor numérico bruto do peso
 // Entrada: string com dígitos (ex: "00415", "ST,GS, 00415 kg", ";0260", "-0.101", etc.)
 // Saída: número inteiro em gramas/milésimos de kg (ex: 415, -101) ou null se inválido
@@ -1481,10 +1536,24 @@ function extrairValorNumericoBruto(pesoBruto: string): number | null {
     return null;
   }
 
+  // Sinal explícito antes do decimal (ex: -0.101, - 0.101, −0.101)
+  const matchDecimalNegativo = texto.match(/[\u2212-]\s*(\d+)[.,](\d+)/);
+  if (matchDecimalNegativo) {
+    const valorDecimal = parseFloat(
+      `${matchDecimalNegativo[1]}.${matchDecimalNegativo[2]}`,
+    );
+    if (!isNaN(valorDecimal)) {
+      const valorInteiro = -Math.round(Math.abs(valorDecimal) * 1000);
+      if (Math.abs(valorInteiro) <= 999999) {
+        return valorInteiro;
+      }
+    }
+  }
+
   // Toledo: ';' ou '-' indicam valores negativos — no início ou antes dos dígitos do peso
   const negativo =
-    /^[;-]/.test(texto) ||
-    /[;,]\s*[;-]/.test(texto) ||
+    /^[;\u2212-]/.test(texto) ||
+    /[;,]\s*[\u2212-]/.test(texto) ||
     /;\s*\d/.test(texto);
 
   // Formato decimal como no visor (ex: -0.101, 12.345, 0.101)
@@ -1499,6 +1568,15 @@ function extrairValorNumericoBruto(pesoBruto: string): number | null {
         return valorInteiro;
       }
       return null;
+    }
+  }
+
+  // Inteiro com sinal explícito (ex: -0101, −0101)
+  const matchIntNegativo = texto.match(/[\u2212-]\s*(\d+)/);
+  if (matchIntNegativo) {
+    const valorNumerico = -parseInt(matchIntNegativo[1], 10);
+    if (!isNaN(valorNumerico) && Math.abs(valorNumerico) <= 999999) {
+      return valorNumerico;
     }
   }
 
@@ -1742,8 +1820,29 @@ function lerPeso(
     }, 800);
 
     // Variáveis para armazenar referências dos listeners (serão definidas depois)
-    let onDataContinuoRef: ((data: string | Buffer) => void) | null = null;
-    let onDataRef: ((data: string | Buffer) => void) | null = null;
+    let onDataLerPesoRef: ((data: string | Buffer) => void) | null = null;
+
+    const limparListenerLerPeso = () => {
+      if (parser && onDataLerPesoRef) {
+        parser.removeListener('data', onDataLerPesoRef);
+      }
+    };
+
+    const finalizarLerPesoComSucesso = (pesoEmKg: string, origem: string) => {
+      if (pesoResolvido) {
+        return;
+      }
+
+      dadosRecebidos = true;
+      dadosRecebidosModoContinuo = true;
+      pesoResolvido = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      if (timeoutModoContinuo) clearTimeout(timeoutModoContinuo);
+      limparListenerLerPeso();
+      callbackPesoRecebido = null;
+      console.log(`Peso recebido (${origem}):`, pesoEmKg, 'kg');
+      resolve(pesoEmKg);
+    };
 
     // Configurar callback para receber peso do listener direto ou parser
     // O peso já vem convertido do parser/listener, então apenas resolve a Promise
@@ -1759,7 +1858,6 @@ function lerPeso(
           return; // Não resolver, continuar esperando
         }
 
-        // Verificar se o peso é válido (não é "0.000" a menos que seja realmente zero)
         const pesoNum = parseFloat(pesoConvertido);
         if (isNaN(pesoNum)) {
           console.log(
@@ -1769,117 +1867,74 @@ function lerPeso(
           return; // Não resolver, continuar esperando
         }
 
-        pesoResolvido = true;
-        dadosRecebidosModoContinuo = true;
-        if (timeoutId) clearTimeout(timeoutId);
-        if (timeoutModoContinuo) clearTimeout(timeoutModoContinuo);
-        callbackPesoRecebido = null;
-
-        // Remover listeners do parser para evitar erros (apenas se existirem)
-        if (parser) {
-          if (onDataContinuoRef) {
-            parser.removeListener('data', onDataContinuoRef);
-          }
-          if (onDataRef) {
-            parser.removeListener('data', onDataRef);
-          }
-        }
-
-        console.log(
-          'Peso recebido via callback - resolvendo Promise com:',
-          pesoConvertido,
-          'kg',
-        );
-        resolve(pesoConvertido);
+        finalizarLerPesoComSucesso(pesoConvertido, 'callback');
       }
     };
 
-    onDataContinuoRef = (data: string | Buffer) => {
-      if (pesoResolvido) return;
-
-      let buffer: Buffer;
-      if (typeof data === 'string') {
-        buffer = Buffer.from(data, 'utf8');
-      } else {
-        buffer = data;
+    onDataLerPesoRef = (data: string | Buffer) => {
+      if (pesoResolvido) {
+        return;
       }
 
-      // Verificar se está no formato STX...ETX
-      if (
-        buffer.length >= 3 &&
-        buffer[0] === 0x02 &&
-        buffer[buffer.length - 1] === 0x03
-      ) {
-        const pesoBruto = processarRespostaToledo(buffer);
-        if (pesoBruto && pesoBruto.length > 0) {
-          const pesoEmKg = registrarEEnviarPesoBruto(
-            pesoBruto,
-            'lerPeso-continuo',
-            { invocarCallback: false },
-          );
-          if (!pesoEmKg) {
-            return;
-          }
+      console.log('Dado recebido no lerPeso (raw):', data);
 
-          dadosRecebidosModoContinuo = true;
-          pesoResolvido = true;
-          if (timeoutModoContinuo) clearTimeout(timeoutModoContinuo);
-          if (timeoutId) clearTimeout(timeoutId);
-          if (parser) {
-            if (onDataContinuoRef) {
-              parser.removeListener('data', onDataContinuoRef);
-            }
-            if (onDataRef) {
-              parser.removeListener('data', onDataRef);
-            }
-          }
-          callbackPesoRecebido = null;
-          console.log('Dados recebidos em modo contínuo:', pesoEmKg, 'kg');
-          resolve(pesoEmKg);
-        }
-      } else {
-        // Formato alternativo
-        const pesoBruto =
-          typeof data === 'string'
-            ? data.trim()
-            : buffer.toString('utf8').trim();
-        if (pesoBruto && pesoBruto.length > 0) {
-          const pesoEmKg = registrarEEnviarPesoBruto(
-            pesoBruto,
-            'lerPeso-continuo-alt',
-            { invocarCallback: false },
-          );
-          if (!pesoEmKg) {
-            return;
-          }
-
-          dadosRecebidosModoContinuo = true;
-          pesoResolvido = true;
-          if (timeoutModoContinuo) clearTimeout(timeoutModoContinuo);
-          if (timeoutId) clearTimeout(timeoutId);
-          if (parser) {
-            if (onDataContinuoRef) {
-              parser.removeListener('data', onDataContinuoRef);
-            }
-            if (onDataRef) {
-              parser.removeListener('data', onDataRef);
-            }
-          }
-          callbackPesoRecebido = null;
-          console.log(
-            'Dados recebidos em modo contínuo (formato alternativo):',
-            pesoEmKg,
-            'kg',
-          );
-          resolve(pesoEmKg);
-        }
+      const pesoEmKg = processarPacoteParserLerPeso(data, 'lerPeso', {
+        invocarCallback: false,
+      });
+      if (pesoEmKg) {
+        finalizarLerPesoComSucesso(pesoEmKg, 'parser');
       }
     };
 
-    // Adicionar listener apenas se o parser existir
-    if (parser && onDataContinuoRef) {
-      parser.once('data', onDataContinuoRef);
+    // Escutar múltiplos pacotes até obter peso válido (inclusive negativo)
+    if (parser && onDataLerPesoRef) {
+      parser.on('data', onDataLerPesoRef);
     }
+
+    let dadosRecebidos = false;
+    timeoutId = setTimeout(() => {
+      callbackPesoRecebido = null;
+      limparListenerLerPeso();
+
+      if (!dadosRecebidos && !dadosRecebidosModoContinuo && !pesoResolvido) {
+        console.log('Timeout: Nenhum dado recebido da balança');
+        console.log('');
+        console.log('=== DIAGNÓSTICO ===');
+        console.log('Nenhum dado foi recebido da balança.');
+        console.log('');
+        console.log('Verifique:');
+        console.log('  1. A balança está ligada e funcionando');
+        console.log('  2. O cabo serial está conectado corretamente');
+        console.log(
+          '  3. A porta COM está correta (verifique no Gerenciador de Dispositivos)',
+        );
+        console.log('  4. A balança está configurada para comunicação serial');
+        console.log('     - Acesse o menu da balança');
+        console.log('     - Procure por "Comunicação Serial" ou "RS232"');
+        console.log(
+          '     - Configure o protocolo (Prt1, TOLEDO Continuous, etc.)',
+        );
+        console.log(
+          '  5. Os parâmetros de comunicação na balança correspondem:',
+        );
+        console.log('     - Baud Rate: 9600');
+        console.log('     - Data Bits: 8');
+        console.log('     - Parity: None');
+        console.log('     - Stop Bits: 1');
+        console.log('  6. Nenhum outro programa está usando a porta COM');
+        console.log('');
+        console.log(
+          'Se a balança envia dados automaticamente (modo contínuo),',
+        );
+        console.log('certifique-se de que essa opção está habilitada no menu.');
+        console.log('');
+        reject(
+          new Error(
+            'Timeout: Nenhum dado recebido da balança. Verifique se a balança está ligada e configurada corretamente.',
+          ),
+        );
+      }
+    }, timeout);
 
     // Se tentarComandos for true, tentar diferentes formatos de comando Toledo
     if (tentarComandos) {
@@ -1979,106 +2034,6 @@ function lerPeso(
       }
     }
 
-    let dadosRecebidos = false;
-    timeoutId = setTimeout(() => {
-      // Limpar callback se timeout ocorrer
-      callbackPesoRecebido = null;
-
-      if (!dadosRecebidos && !dadosRecebidosModoContinuo && !pesoResolvido) {
-        console.log('Timeout: Nenhum dado recebido da balança');
-        console.log('');
-        console.log('=== DIAGNÓSTICO ===');
-        console.log('Nenhum dado foi recebido da balança.');
-        console.log('');
-        console.log('Verifique:');
-        console.log('  1. A balança está ligada e funcionando');
-        console.log('  2. O cabo serial está conectado corretamente');
-        console.log(
-          '  3. A porta COM está correta (verifique no Gerenciador de Dispositivos)',
-        );
-        console.log('  4. A balança está configurada para comunicação serial');
-        console.log('     - Acesse o menu da balança');
-        console.log('     - Procure por "Comunicação Serial" ou "RS232"');
-        console.log(
-          '     - Configure o protocolo (Prt1, TOLEDO Continuous, etc.)',
-        );
-        console.log(
-          '  5. Os parâmetros de comunicação na balança correspondem:',
-        );
-        console.log('     - Baud Rate: 9600');
-        console.log('     - Data Bits: 8');
-        console.log('     - Parity: None');
-        console.log('     - Stop Bits: 1');
-        console.log('  6. Nenhum outro programa está usando a porta COM');
-        console.log('');
-        console.log(
-          'Se a balança envia dados automaticamente (modo contínuo),',
-        );
-        console.log('certifique-se de que essa opção está habilitada no menu.');
-        console.log('');
-        reject(
-          new Error(
-            'Timeout: Nenhum dado recebido da balança. Verifique se a balança está ligada e configurada corretamente.',
-          ),
-        );
-      }
-    }, timeout);
-
-    // Listener temporário para capturar dados do parser (após comandos)
-    // Este listener só será usado se o callback não processar os dados
-    onDataRef = (data: string | Buffer) => {
-      // Se já recebeu dados em modo contínuo ou já foi resolvido, ignorar
-      if (dadosRecebidosModoContinuo || pesoResolvido) {
-        return;
-      }
-
-      console.log('Dado recebido no lerPeso (raw):', data);
-
-      let buffer: Buffer;
-      if (typeof data === 'string') {
-        buffer = Buffer.from(data, 'utf8');
-      } else {
-        buffer = data;
-      }
-
-      console.log('Dado recebido (hex):', buffer.toString('hex'));
-
-      // Remover caracteres de controle
-      let pesoBruto = buffer
-        .toString('utf8')
-        .replace(/[\x00-\x1F\x7F]/g, '')
-        .trim();
-
-      const pesoEmKg = registrarEEnviarPesoBruto(pesoBruto, 'lerPeso-onData', {
-        invocarCallback: false,
-      });
-
-      if (!pesoEmKg) {
-        return;
-      }
-
-      dadosRecebidos = true;
-      pesoResolvido = true;
-      if (timeoutId) clearTimeout(timeoutId);
-      if (timeoutModoContinuo) clearTimeout(timeoutModoContinuo);
-      if (parser) {
-        if (onDataRef) {
-          parser.removeListener('data', onDataRef);
-        }
-        if (onDataContinuoRef) {
-          parser.removeListener('data', onDataContinuoRef);
-        }
-      }
-      callbackPesoRecebido = null;
-
-      console.log('Peso extraído e convertido (onData):', pesoEmKg, 'kg');
-      resolve(pesoEmKg);
-    };
-
-    // Adicionar listener apenas se o parser existir e ainda não foi resolvido
-    if (parser && !pesoResolvido && onDataRef) {
-      parser.once('data', onDataRef);
-    }
   });
 }
 
