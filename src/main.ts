@@ -795,6 +795,21 @@ function injetarPontoVendaNaWebview(): void {
   });
 }
 
+// Função para encerrar o aplicativo completamente (serial, timers, janelas)
+async function encerrarAplicacaoCompletamente(origem: string): Promise<void> {
+  if (isQuitting) {
+    return;
+  }
+  console.log(`Encerramento solicitado (${origem})`);
+  try {
+    await limparRecursosCompletamente();
+    app.quit();
+  } catch (error) {
+    console.error('Erro ao encerrar app:', error);
+    app.quit();
+  }
+}
+
 // Função para configurar escuta de mensagens de navegação da WebView
 function configurarEscutaNavegacao(): void {
   if (!webViewWindow || webViewWindow.isDestroyed()) {
@@ -812,17 +827,26 @@ function configurarEscutaNavegacao(): void {
       if (!window.__electronAbrirTelaInicial) {
         window.__electronAbrirTelaInicial = function() {
           console.log('Função __electronAbrirTelaInicial chamada');
-          // Criar elemento temporário que será detectado pelo processo principal
           const el = document.createElement('div');
           el.id = '__electron_abrir_tela_inicial__';
           el.style.display = 'none';
           document.body.appendChild(el);
-          setTimeout(() => el.remove(), 50);
+          setTimeout(() => el.remove(), 10000);
+        };
+      }
+
+      if (!window.__electronFecharApp) {
+        window.__electronFecharApp = function() {
+          console.log('Função __electronFecharApp chamada');
+          const el = document.createElement('div');
+          el.id = '__electron_fechar_app__';
+          el.style.display = 'none';
+          document.body.appendChild(el);
+          setTimeout(() => el.remove(), 10000);
         };
       }
       
-      // Escutar mensagens postMessage para navegação
-      // Remover listener anterior se existir para evitar duplicatas
+      // Escutar mensagens postMessage para navegação e fechamento
       if (window.__electronNavigationListener) {
         window.removeEventListener('message', window.__electronNavigationListener);
       }
@@ -832,6 +856,12 @@ function configurarEscutaNavegacao(): void {
           console.log('Mensagem de navegação recebida:', event.data);
           if (typeof window.__electronAbrirTelaInicial === 'function') {
             window.__electronAbrirTelaInicial();
+          }
+        }
+        if (event.data && event.data.tipo === '__ELECTRON_FECHAR_APP__') {
+          console.log('Mensagem de fechar app recebida:', event.data);
+          if (typeof window.__electronFecharApp === 'function') {
+            window.__electronFecharApp();
           }
         }
       };
@@ -859,11 +889,21 @@ function configurarEscutaNavegacao(): void {
     webViewWindow.webContents
       .executeJavaScript(
         `
-      document.getElementById('__electron_abrir_tela_inicial__') !== null
+      ({
+        abrirTela: document.getElementById('__electron_abrir_tela_inicial__') !== null,
+        fecharApp: document.getElementById('__electron_fechar_app__') !== null
+      })
     `,
       )
-      .then((existe) => {
-        if (existe && !isQuitting) {
+      .then((sinais: { abrirTela: boolean; fecharApp: boolean }) => {
+        if (sinais.fecharApp && !isQuitting) {
+          console.log('Solicitação para fechar aplicativo detectada');
+          void encerrarAplicacaoCompletamente('webview');
+          timerVerificarNavegacao = null;
+          return;
+        }
+
+        if (sinais.abrirTela && !isQuitting) {
           console.log('Solicitação para abrir tela inicial detectada');
           // Definir flags para indicar que há instrução explícita de abrir tela inicial
           deveAbrirTelaInicial = true;
@@ -2825,12 +2865,10 @@ ipcMain.handle('sair-fullscreen', async () => {
 ipcMain.handle('app-quit', async () => {
   try {
     console.log('Fechamento solicitado via IPC do renderer');
-    await limparRecursosCompletamente();
-    app.quit();
+    await encerrarAplicacaoCompletamente('ipc');
     return { sucesso: true };
   } catch (error: any) {
     console.error('Erro ao encerrar app via IPC:', error);
-    // Mesmo com erro, tentar encerrar o app
     app.quit();
     return { sucesso: false, erro: error.message };
   }
