@@ -1362,20 +1362,6 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
       // Isso é importante porque o pipe pode consumir os dados
       // Toledo responde no formato: STX (0x02) + dados + ETX (0x03)
       serialPort!.on('data', (data: Buffer) => {
-        const hex = data.toString('hex');
-        const text = data.toString('utf8', 0, Math.min(data.length, 100));
-        console.log(
-          '=== DADOS RECEBIDOS DIRETAMENTE DA PORTA ===',
-          '\nHex:',
-          hex,
-          '\nTexto:',
-          text,
-          '\nTamanho:',
-          data.length,
-          'bytes',
-          '\n==========================================',
-        );
-
         processarDadosSerialRecebidos(data, 'serial-direto');
       });
 
@@ -1448,12 +1434,291 @@ function enviarComando(comando: string | Buffer): Promise<void> {
   });
 }
 
+// --- Parser protocolo Toledo (Prt3/P05A/P06/P06A/P07) ---
+
+type TipoResultadoToledo =
+  | 'peso'
+  | 'instavel'
+  | 'negativo_status'
+  | 'sobrecarga'
+  | 'captura_zero'
+  | 'erro_calibracao'
+  | 'invalido';
+
+interface ResultadoParseToledo {
+  tipo: TipoResultadoToledo;
+  pesoEmKg?: string;
+  pesoNumerico?: number;
+  protocolo?: string;
+  motivo: string;
+  campoBruto: string;
+}
+
+let ultimoResultadoParseToledo: ResultadoParseToledo | null = null;
+
+function logBufferSerialDetalhado(buffer: Buffer, contexto: string): void {
+  const hex = buffer.toString('hex');
+  const ascii = buffer
+    .toString('utf8')
+    .replace(/[\x00-\x1F\x7F]/g, (c) => {
+      const code = c.charCodeAt(0);
+      if (code === 0x02) return '☻';
+      if (code === 0x03) return '♥';
+      if (code === 0x0d) return '\\r';
+      if (code === 0x0a) return '\\n';
+      return `\\x${code.toString(16).padStart(2, '0')}`;
+    });
+  console.log(
+    `[Toledo ${contexto}] bytes=${buffer.length} hex=${hex} ascii=${JSON.stringify(ascii)}`,
+  );
+}
+
+function milParaKgFormatado(mil: number): string {
+  return (mil / 1000).toFixed(3);
+}
+
+function parsearDecimalComSinalParaMil(texto: string): number | null {
+  const normalizado = texto.trim().replace(',', '.');
+  const match = normalizado.match(/^([\u2212+\-]?)\s*(\d+(?:\.\d+)?)$/);
+  if (!match) {
+    return null;
+  }
+  const sinal = match[1] === '-' || match[1] === '\u2212' ? -1 : 1;
+  const valor = parseFloat(`${sinal === -1 ? '-' : ''}${match[2]}`);
+  if (isNaN(valor)) {
+    return null;
+  }
+  const mil = Math.round(Math.abs(valor) * 1000) * sinal;
+  if (Math.abs(mil) > 999999) {
+    return null;
+  }
+  return mil;
+}
+
+/**
+ * Interpreta o campo de peso Toledo conforme manuais Prt3/P05A/P06/P06A/P07.
+ *
+ * Prt3/P05A (ENQ):
+ *   [STX][PPPPP][ETX]  peso estável (5 dígitos: 2 inteiros + 3 decimais)
+ *   [STX][IIIII][ETX]  peso instável
+ *   [STX][NNNNN][ETX]  peso negativo (status — sem valor numérico)
+ *   [STX][SSSSS][ETX]  sobrecarga
+ *
+ * P06A/Prt2: [STX][SW][PPPPPP][CR] — SW=N/I/E/S + peso com ponto decimal
+ * P07:       [STX][±PPPVPPP][ETX] — sinal + dígitos + V + dígitos
+ */
+function parsearRespostaToledoCampo(campoBruto: string): ResultadoParseToledo {
+  const campo = campoBruto.trim();
+  console.log(`[Toledo] parse entrada: ${JSON.stringify(campo)}`);
+
+  // Prt3/P05A — status por repetição de caractere (5+ chars)
+  if (/^I+$/.test(campo) && campo.length >= 5) {
+    return {
+      tipo: 'instavel',
+      motivo: 'Peso instável (IIIII)',
+      campoBruto: campo,
+      protocolo: 'Prt3/P05A',
+    };
+  }
+  if (/^N+$/.test(campo) && campo.length >= 5) {
+    return {
+      tipo: 'negativo_status',
+      motivo:
+        'Peso negativo (NNNNN) — protocolo Prt3/P05A: indica sinal negativo, mas não transmite o valor numérico',
+      campoBruto: campo,
+      protocolo: 'Prt3/P05A',
+    };
+  }
+  if (/^S+$/.test(campo) && campo.length >= 5) {
+    return {
+      tipo: 'sobrecarga',
+      motivo: 'Sobrecarga (SSSSS)',
+      campoBruto: campo,
+      protocolo: 'Prt3/P05A',
+    };
+  }
+  if (/^C+$/.test(campo) && campo.length >= 5) {
+    return {
+      tipo: 'captura_zero',
+      motivo: 'Captura inicial de zero (CCCCC)',
+      campoBruto: campo,
+      protocolo: 'P07',
+    };
+  }
+  if (/^E+$/.test(campo) && campo.length >= 5) {
+    return {
+      tipo: 'erro_calibracao',
+      motivo: 'Erro de calibração (EEEEE)',
+      campoBruto: campo,
+      protocolo: 'P07',
+    };
+  }
+
+  // P07: ±PPPVPPP (ex: -0V108, +0V040)
+  const p07 = campo.match(/^([\u2212+\-])(\d+)V(\d+)$/i);
+  if (p07) {
+    const sinal = p07[1] === '-' || p07[1] === '\u2212' ? -1 : 1;
+    const mil = sinal * (parseInt(p07[2], 10) * 1000 + parseInt(p07[3], 10));
+    return {
+      tipo: 'peso',
+      pesoEmKg: milParaKgFormatado(mil),
+      pesoNumerico: mil,
+      protocolo: 'P07',
+      motivo: 'Peso estável P07',
+      campoBruto: campo,
+    };
+  }
+
+  // P07 status com V: NIIIVIII, NSSSVSSS, etc.
+  const p07Instavel = campo.match(/^([\u2212+\-]?)I+V(I+)$/i);
+  if (p07Instavel) {
+    return {
+      tipo: 'instavel',
+      motivo: 'Peso instável (P07)',
+      campoBruto: campo,
+      protocolo: 'P07',
+    };
+  }
+
+  // P06A: SW + peso (ex: N-0.108, E0.000, I0.040)
+  const p06a = campo.match(/^([NEIS])([\u2212+\-]?\d+[.,]\d+)$/);
+  if (p06a) {
+    const statusChar = p06a[1];
+    if (statusChar === 'S') {
+      return {
+        tipo: 'sobrecarga',
+        motivo: 'Sobrecarga (P06A SW=S)',
+        campoBruto: campo,
+        protocolo: 'P06A',
+      };
+    }
+    if (statusChar === 'I') {
+      return {
+        tipo: 'instavel',
+        motivo: 'Peso instável (P06A SW=I)',
+        campoBruto: campo,
+        protocolo: 'P06A',
+      };
+    }
+    let mil = parsearDecimalComSinalParaMil(p06a[2]);
+    if (mil === null) {
+      return {
+        tipo: 'invalido',
+        motivo: `P06A: peso inválido em "${campo}"`,
+        campoBruto: campo,
+      };
+    }
+    if (statusChar === 'N' && mil > 0) {
+      mil = -mil;
+    }
+    return {
+      tipo: 'peso',
+      pesoEmKg: milParaKgFormatado(mil),
+      pesoNumerico: mil,
+      protocolo: 'P06A',
+      motivo: `Peso P06A (status=${statusChar})`,
+      campoBruto: campo,
+    };
+  }
+
+  // P06/Prt2: peso com sinal e ponto decimal (ex: -0.108, 0.040)
+  if (/^[\u2212+\-]?\d+[.,]\d+$/.test(campo)) {
+    const mil = parsearDecimalComSinalParaMil(campo);
+    if (mil !== null) {
+      return {
+        tipo: 'peso',
+        pesoEmKg: milParaKgFormatado(mil),
+        pesoNumerico: mil,
+        protocolo: 'P06/Prt2',
+        motivo: 'Peso com sinal e ponto decimal',
+        campoBruto: campo,
+      };
+    }
+  }
+
+  // Prt3/P05A: 5 dígitos sem ponto — 2 inteiros + 3 decimais (ex: 00040 = 0,040 kg)
+  if (/^\d{5}$/.test(campo)) {
+    const parteInteira = parseInt(campo.slice(0, 2), 10);
+    const parteDecimal = parseInt(campo.slice(2), 10);
+    const mil = parteInteira * 1000 + parteDecimal;
+    return {
+      tipo: 'peso',
+      pesoEmKg: milParaKgFormatado(mil),
+      pesoNumerico: mil,
+      protocolo: 'Prt3/P05A',
+      motivo: 'Peso estável 5 dígitos (2 int + 3 dec)',
+      campoBruto: campo,
+    };
+  }
+
+  // Fallback: formatos genéricos/legados (;0101, ST,GS,...,-0.108)
+  const milGenerico = extrairValorNumericoBrutoLegado(campo);
+  if (milGenerico !== null) {
+    return {
+      tipo: 'peso',
+      pesoEmKg: milParaKgFormatado(milGenerico),
+      pesoNumerico: milGenerico,
+      protocolo: 'genérico',
+      motivo: 'Peso via parser genérico/legado',
+      campoBruto: campo,
+    };
+  }
+
+  console.log(
+    `[Toledo] decisão: inválido — não foi possível interpretar "${campo}"`,
+  );
+  return {
+    tipo: 'invalido',
+    motivo: `Campo não reconhecido: "${campo}"`,
+    campoBruto: campo,
+  };
+}
+
+function isRespostaToledoProcessavel(resultado: ResultadoParseToledo): boolean {
+  return (
+    resultado.tipo === 'peso' ||
+    resultado.tipo === 'instavel' ||
+    resultado.tipo === 'negativo_status' ||
+    resultado.tipo === 'sobrecarga' ||
+    resultado.tipo === 'captura_zero' ||
+    resultado.tipo === 'erro_calibracao'
+  );
+}
+
+function mensagemErroToledo(resultado: ResultadoParseToledo): string {
+  if (resultado.tipo === 'negativo_status') {
+    return (
+      'Peso negativo detectado (NNNNN). No protocolo Prt3/P05A a Toledo indica peso negativo, ' +
+      'mas não envia o valor numérico (ex: -0,108). Para ler pesos negativos com valor, ' +
+      'configure a balança para protocolo P06, P06A ou P07 (parâmetro C14 no menu técnico).'
+    );
+  }
+  if (resultado.tipo === 'sobrecarga') {
+    return 'Balança em sobrecarga (SSSSS). Remova o excesso de peso.';
+  }
+  if (resultado.tipo === 'captura_zero') {
+    return 'Balança em captura inicial de zero (CCCCC). Aguarde estabilização.';
+  }
+  if (resultado.tipo === 'erro_calibracao') {
+    return 'Erro de calibração na balança (EEEEE). Verifique a calibração.';
+  }
+  return resultado.motivo;
+}
+
 // Função para extrair segmentos de peso de um buffer serial bruto
 function extrairSegmentosPesoDeBuffer(buffer: Buffer): string[] {
   const segmentos: string[] = [];
 
   if (buffer.length === 0) {
     return segmentos;
+  }
+
+  // STX...CR (P06A, Prt2)
+  if (buffer.length >= 3 && buffer[0] === 0x02) {
+    const crIdx = buffer.indexOf(0x0d);
+    if (crIdx > 0) {
+      segmentos.push(buffer.slice(1, crIdx).toString('utf8').trim());
+    }
   }
 
   // STX...ETX (frame completo em um chunk)
@@ -1489,7 +1754,12 @@ function extrairSegmentosPesoDeBuffer(buffer: Buffer): string[] {
 }
 
 function processarDadosSerialRecebidos(data: Buffer, origem: string): void {
+  logBufferSerialDetalhado(data, origem);
   const segmentos = extrairSegmentosPesoDeBuffer(data);
+  console.log(
+    `[Toledo ${origem}] segmentos extraídos:`,
+    segmentos.map((s) => JSON.stringify(s)),
+  );
   for (const segmento of segmentos) {
     registrarEEnviarPesoBruto(segmento, origem);
   }
@@ -1523,10 +1793,8 @@ function processarPacoteParserLerPeso(
   return null;
 }
 
-// Função para extrair valor numérico bruto do peso
-// Entrada: string com dígitos (ex: "00415", "ST,GS, 00415 kg", ";0260", "-0.101", etc.)
-// Saída: número inteiro em gramas/milésimos de kg (ex: 415, -101) ou null se inválido
-function extrairValorNumericoBruto(pesoBruto: string): number | null {
+// Parser genérico/legado para formatos não-Toledo ou contínuos alternativos
+function extrairValorNumericoBrutoLegado(pesoBruto: string): number | null {
   if (!pesoBruto || typeof pesoBruto !== 'string') {
     return null;
   }
@@ -1606,24 +1874,15 @@ function extrairValorNumericoBruto(pesoBruto: string): number | null {
 // Entrada: string com dígitos (ex: "00415", "ST,GS, 00415 kg", etc.)
 // Saída: string formatada em kg com 3 casas decimais (ex: "0.415") ou null se inválido
 function converterPesoParaQuilogramas(pesoBruto: string): string | null {
-  const valorNumerico = extrairValorNumericoBruto(pesoBruto);
-
+  const resultado = parsearRespostaToledoCampo(pesoBruto);
+  if (resultado.tipo === 'peso' && resultado.pesoEmKg) {
+    return resultado.pesoEmKg;
+  }
+  const valorNumerico = extrairValorNumericoBrutoLegado(pesoBruto);
   if (valorNumerico === null) {
-    console.log('Nenhum dígito numérico encontrado no peso bruto:', pesoBruto);
     return null;
   }
-
-  // Dividir por 1000 para converter para quilogramas
-  const pesoEmKg = valorNumerico / 1000;
-
-  // Formatar com 3 casas decimais
-  const pesoFormatado = pesoEmKg.toFixed(3);
-
-  console.log(
-    `Conversão: "${pesoBruto}" -> ${valorNumerico} -> ${pesoEmKg} kg -> "${pesoFormatado}" kg`,
-  );
-
-  return pesoFormatado;
+  return milParaKgFormatado(valorNumerico);
 }
 
 function limparCachePeso(): void {
@@ -1633,10 +1892,7 @@ function limparCachePeso(): void {
   ultimoPesoEnviadoWebViewValor = null;
   ultimoPesoEnviadoWebViewMs = 0;
   ultimaLeituraSerialMs = 0;
-}
-
-function isRespostaStatusErro(pesoBruto: string): boolean {
-  return /^[Nn]+$/.test(pesoBruto) || /^[Ee]+$/.test(pesoBruto);
+  ultimoResultadoParseToledo = null;
 }
 
 function registrarEEnviarPesoBruto(
@@ -1647,23 +1903,49 @@ function registrarEEnviarPesoBruto(
   const { invocarCallback = true } = options;
 
   if (!pesoBruto || pesoBruto.trim().length === 0) {
+    console.log(`[Toledo ${origem}] campo vazio — ignorado`);
     return null;
   }
 
-  if (isRespostaStatusErro(pesoBruto)) {
-    console.log(
-      `Resposta de status/erro (${origem}): "${pesoBruto}" - balança instável.`,
-    );
+  const resultado = parsearRespostaToledoCampo(pesoBruto);
+  ultimoResultadoParseToledo = resultado;
+
+  console.log(
+    `[Toledo ${origem}] decisão: tipo=${resultado.tipo}` +
+      (resultado.protocolo ? ` protocolo=${resultado.protocolo}` : '') +
+      ` motivo="${resultado.motivo}"`,
+  );
+
+  if (resultado.tipo === 'instavel') {
+    console.log(`[Toledo ${origem}] aguardando estabilização (${resultado.motivo})`);
     return null;
   }
 
-  const pesoNumerico = extrairValorNumericoBruto(pesoBruto);
-  const pesoEmKg = converterPesoParaQuilogramas(pesoBruto);
-
-  if (pesoEmKg === null || pesoNumerico === null) {
-    console.log(`Peso inválido (${origem}):`, pesoBruto);
+  if (resultado.tipo === 'negativo_status') {
+    console.warn(`[Toledo ${origem}] ${resultado.motivo}`);
     return null;
   }
+
+  if (
+    resultado.tipo === 'sobrecarga' ||
+    resultado.tipo === 'captura_zero' ||
+    resultado.tipo === 'erro_calibracao'
+  ) {
+    console.warn(`[Toledo ${origem}] ${resultado.motivo}`);
+    return null;
+  }
+
+  if (resultado.tipo !== 'peso' || !resultado.pesoEmKg || resultado.pesoNumerico === undefined) {
+    console.log(`[Toledo ${origem}] resposta inválida: ${resultado.motivo}`);
+    return null;
+  }
+
+  const pesoEmKg = resultado.pesoEmKg;
+  const pesoNumerico = resultado.pesoNumerico;
+
+  console.log(
+    `[Toledo ${origem}] peso aceito: ${pesoEmKg} kg (raw=${pesoNumerico}, protocolo=${resultado.protocolo})`,
+  );
 
   if (
     ultimoPesoNumericoEnviado === pesoNumerico &&
@@ -1801,6 +2083,7 @@ function lerPeso(
     }
 
     console.log('Aguardando dados da balança (timeout:', timeout, 'ms)...');
+    ultimoResultadoParseToledo = null;
 
     let dadosRecebidosModoContinuo = false;
     let pesoResolvido = false;
@@ -1826,6 +2109,21 @@ function lerPeso(
       if (parser && onDataLerPesoRef) {
         parser.removeListener('data', onDataLerPesoRef);
       }
+    };
+
+    const finalizarLerPesoComErro = (erro: string, origem: string) => {
+      if (pesoResolvido) {
+        return;
+      }
+      dadosRecebidos = true;
+      dadosRecebidosModoContinuo = true;
+      pesoResolvido = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      if (timeoutModoContinuo) clearTimeout(timeoutModoContinuo);
+      limparListenerLerPeso();
+      callbackPesoRecebido = null;
+      console.warn(`[Toledo lerPeso] encerrado (${origem}): ${erro}`);
+      reject(new Error(erro));
     };
 
     const finalizarLerPesoComSucesso = (pesoEmKg: string, origem: string) => {
@@ -1876,14 +2174,30 @@ function lerPeso(
         return;
       }
 
-      console.log('Dado recebido no lerPeso (raw):', data);
+      const buffer =
+        typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
+      logBufferSerialDetalhado(buffer, 'lerPeso-parser');
+      dadosRecebidos = true;
 
       const pesoEmKg = processarPacoteParserLerPeso(data, 'lerPeso', {
         invocarCallback: false,
       });
       if (pesoEmKg) {
         finalizarLerPesoComSucesso(pesoEmKg, 'parser');
+        return;
       }
+
+      const ultimo = ultimoResultadoParseToledo;
+      if (!ultimo || !isRespostaToledoProcessavel(ultimo)) {
+        return;
+      }
+
+      if (ultimo.tipo === 'instavel') {
+        console.log('[Toledo lerPeso] instável — aguardando estabilizar');
+        return;
+      }
+
+      finalizarLerPesoComErro(mensagemErroToledo(ultimo), ultimo.tipo);
     };
 
     // Escutar múltiplos pacotes até obter peso válido (inclusive negativo)
@@ -1893,11 +2207,39 @@ function lerPeso(
 
     let dadosRecebidos = false;
     timeoutId = setTimeout(() => {
+      if (pesoResolvido) {
+        return;
+      }
+
       callbackPesoRecebido = null;
       limparListenerLerPeso();
 
-      if (!dadosRecebidos && !dadosRecebidosModoContinuo && !pesoResolvido) {
-        console.log('Timeout: Nenhum dado recebido da balança');
+      if (ultimoResultadoParseToledo?.tipo === 'negativo_status') {
+        reject(new Error(mensagemErroToledo(ultimoResultadoParseToledo)));
+        return;
+      }
+
+      if (
+        ultimoResultadoParseToledo &&
+        (ultimoResultadoParseToledo.tipo === 'sobrecarga' ||
+          ultimoResultadoParseToledo.tipo === 'captura_zero' ||
+          ultimoResultadoParseToledo.tipo === 'erro_calibracao')
+      ) {
+        reject(new Error(mensagemErroToledo(ultimoResultadoParseToledo)));
+        return;
+      }
+
+      if (dadosRecebidos || dadosRecebidosModoContinuo) {
+        console.log('Timeout: dados recebidos, mas nenhum peso válido');
+        reject(
+          new Error(
+            'Timeout: a balança respondeu, mas nenhum peso válido foi obtido. Verifique se o peso está estável.',
+          ),
+        );
+        return;
+      }
+
+      console.log('Timeout: Nenhum dado recebido da balança');
         console.log('');
         console.log('=== DIAGNÓSTICO ===');
         console.log('Nenhum dado foi recebido da balança.');
@@ -1933,7 +2275,6 @@ function lerPeso(
             'Timeout: Nenhum dado recebido da balança. Verifique se a balança está ligada e configurada corretamente.',
           ),
         );
-      }
     }, timeout);
 
     // Se tentarComandos for true, tentar diferentes formatos de comando Toledo
