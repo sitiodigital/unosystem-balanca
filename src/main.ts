@@ -1477,6 +1477,55 @@ function milParaKgFormatado(mil: number): string {
   return (mil / 1000).toFixed(3);
 }
 
+const PESO_ZERO_KG = '0.000';
+const PESO_ZERO_MIL = 0;
+
+/**
+ * Pesos negativos não são úteis ao usuário final — normaliza para zero
+ * logo após a conversão, antes de qualquer envio ou callback.
+ */
+function normalizarPesoParaCliente(
+  pesoEmKg: string,
+  pesoNumerico: number,
+  origem?: string,
+): { pesoEmKg: string; pesoNumerico: number } {
+  if (pesoNumerico < 0) {
+    if (origem) {
+      console.log(
+        `[Toledo ${origem}] peso negativo ${pesoEmKg} kg (${pesoNumerico}) normalizado para ${PESO_ZERO_KG} kg`,
+      );
+    }
+    return { pesoEmKg: PESO_ZERO_KG, pesoNumerico: PESO_ZERO_MIL };
+  }
+  return { pesoEmKg, pesoNumerico };
+}
+
+function extrairPesoNormalizadoDoResultadoToledo(
+  resultado: ResultadoParseToledo,
+  origem: string,
+): { pesoEmKg: string; pesoNumerico: number } | null {
+  if (resultado.tipo === 'negativo_status') {
+    console.log(
+      `[Toledo ${origem}] peso negativo (NNNNN) normalizado para ${PESO_ZERO_KG} kg`,
+    );
+    return { pesoEmKg: PESO_ZERO_KG, pesoNumerico: PESO_ZERO_MIL };
+  }
+
+  if (
+    resultado.tipo !== 'peso' ||
+    resultado.pesoEmKg === undefined ||
+    resultado.pesoNumerico === undefined
+  ) {
+    return null;
+  }
+
+  return normalizarPesoParaCliente(
+    resultado.pesoEmKg,
+    resultado.pesoNumerico,
+    origem,
+  );
+}
+
 function parsearDecimalComSinalParaMil(texto: string): number | null {
   const normalizado = texto.trim().replace(',', '.');
   const match = normalizado.match(/^([\u2212+\-]?)\s*(\d+(?:\.\d+)?)$/);
@@ -1686,13 +1735,6 @@ function isRespostaToledoProcessavel(resultado: ResultadoParseToledo): boolean {
 }
 
 function mensagemErroToledo(resultado: ResultadoParseToledo): string {
-  if (resultado.tipo === 'negativo_status') {
-    return (
-      'Peso negativo detectado (NNNNN). No protocolo Prt3/P05A a Toledo indica peso negativo, ' +
-      'mas não envia o valor numérico (ex: -0,108). Para ler pesos negativos com valor, ' +
-      'configure a balança para protocolo P06, P06A ou P07 (parâmetro C14 no menu técnico).'
-    );
-  }
   if (resultado.tipo === 'sobrecarga') {
     return 'Balança em sobrecarga (SSSSS). Remova o excesso de peso.';
   }
@@ -1875,14 +1917,21 @@ function extrairValorNumericoBrutoLegado(pesoBruto: string): number | null {
 // Saída: string formatada em kg com 3 casas decimais (ex: "0.415") ou null se inválido
 function converterPesoParaQuilogramas(pesoBruto: string): string | null {
   const resultado = parsearRespostaToledoCampo(pesoBruto);
-  if (resultado.tipo === 'peso' && resultado.pesoEmKg) {
-    return resultado.pesoEmKg;
+  const pesoNormalizado = extrairPesoNormalizadoDoResultadoToledo(
+    resultado,
+    'converter',
+  );
+  if (pesoNormalizado) {
+    return pesoNormalizado.pesoEmKg;
   }
   const valorNumerico = extrairValorNumericoBrutoLegado(pesoBruto);
   if (valorNumerico === null) {
     return null;
   }
-  return milParaKgFormatado(valorNumerico);
+  return normalizarPesoParaCliente(
+    milParaKgFormatado(valorNumerico),
+    valorNumerico,
+  ).pesoEmKg;
 }
 
 function limparCachePeso(): void {
@@ -1921,11 +1970,6 @@ function registrarEEnviarPesoBruto(
     return null;
   }
 
-  if (resultado.tipo === 'negativo_status') {
-    console.warn(`[Toledo ${origem}] ${resultado.motivo}`);
-    return null;
-  }
-
   if (
     resultado.tipo === 'sobrecarga' ||
     resultado.tipo === 'captura_zero' ||
@@ -1935,16 +1979,19 @@ function registrarEEnviarPesoBruto(
     return null;
   }
 
-  if (resultado.tipo !== 'peso' || !resultado.pesoEmKg || resultado.pesoNumerico === undefined) {
+  const pesoNormalizado = extrairPesoNormalizadoDoResultadoToledo(
+    resultado,
+    origem,
+  );
+  if (!pesoNormalizado) {
     console.log(`[Toledo ${origem}] resposta inválida: ${resultado.motivo}`);
     return null;
   }
 
-  const pesoEmKg = resultado.pesoEmKg;
-  const pesoNumerico = resultado.pesoNumerico;
+  const { pesoEmKg, pesoNumerico } = pesoNormalizado;
 
   console.log(
-    `[Toledo ${origem}] peso aceito: ${pesoEmKg} kg (raw=${pesoNumerico}, protocolo=${resultado.protocolo})`,
+    `[Toledo ${origem}] peso aceito: ${pesoEmKg} kg (raw=${pesoNumerico}, protocolo=${resultado.protocolo ?? 'n/d'})`,
   );
 
   if (
@@ -2197,10 +2244,16 @@ function lerPeso(
         return;
       }
 
-      finalizarLerPesoComErro(mensagemErroToledo(ultimo), ultimo.tipo);
+      if (
+        ultimo.tipo === 'sobrecarga' ||
+        ultimo.tipo === 'captura_zero' ||
+        ultimo.tipo === 'erro_calibracao'
+      ) {
+        finalizarLerPesoComErro(mensagemErroToledo(ultimo), ultimo.tipo);
+      }
     };
 
-    // Escutar múltiplos pacotes até obter peso válido (inclusive negativo)
+    // Escutar múltiplos pacotes até obter peso válido
     if (parser && onDataLerPesoRef) {
       parser.on('data', onDataLerPesoRef);
     }
@@ -2213,11 +2266,6 @@ function lerPeso(
 
       callbackPesoRecebido = null;
       limparListenerLerPeso();
-
-      if (ultimoResultadoParseToledo?.tipo === 'negativo_status') {
-        reject(new Error(mensagemErroToledo(ultimoResultadoParseToledo)));
-        return;
-      }
 
       if (
         ultimoResultadoParseToledo &&
