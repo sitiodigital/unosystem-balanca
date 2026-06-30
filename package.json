@@ -1,14 +1,15 @@
 {
   "name": "unosystem-balanca",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Aplicação desktop Electron para configuração e comunicação com balança via porta serial",
   "main": "dist/main.js",
   "scripts": {
     "dev": "node scripts/dev.js",
-    "build": "tsc && node scripts/copy-assets.js",
+    "generate:icons": "node scripts/generate-icons.js",
+    "build": "tsc && node scripts/generate-icons.js && node scripts/copy-assets.js",
     "start": "pnpm build && pnpm exec electron .",
     "build:win": "pnpm build && node scripts/build-win.js",
-    "build:win:local": "pnpm build && node scripts/convert-icon.js && electron-builder --win --x64",
+    "build:win:local": "pnpm build && electron-builder --win --x64",
     "fix:electron": "node scripts/fix-electron.js",
     "fix:electron:win": "powershell -ExecutionPolicy Bypass -File scripts/fix-electron.ps1",
     "install:electron": "node scripts/force-install-electron.js",
@@ -63,7 +64,7 @@
       "icon": "assets/512x512.png"
     },
     "mac": {
-      "icon": "assets/apple.png",
+      "icon": "assets/512x512.png",
       "category": "public.app-category.utilities"
     },
     "linux": {

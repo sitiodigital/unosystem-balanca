@@ -1,0 +1,8 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <clipPath id="c3"><rect x="0" y="0" width="512" height="512" rx="110"/></clipPath>
+  </defs>
+  <rect x="0" y="0" width="512" height="512" rx="110" fill="#4A9FD4"/>
+  <text x="256" y="256" font-family="Arial Black, Arial, sans-serif" font-weight="900"
+        font-size="460" fill="white" text-anchor="middle" dominant-baseline="central" clip-path="url(#c3)">U</text>
+</svg>

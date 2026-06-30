@@ -9,6 +9,10 @@ const store = new Store<{ pontoVendaBalanca: string | null }>({
   name: 'balanca-config',
 });
 
+function getAppIconPath(): string {
+  return path.join(__dirname, '../assets/512x512.png');
+}
+
 let mainWindow: BrowserWindow | null = null;
 let webViewWindow: BrowserWindow | null = null;
 let serialPort: SerialPort | null = null;
@@ -103,6 +107,7 @@ function createWindow() {
     fullscreen: true, // Abrir em tela cheia
     autoHideMenuBar: true, // Esconder barra de menu automaticamente
     show: false, // Não mostrar inicialmente - será mostrada apenas se necessário
+    icon: getAppIconPath(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -394,6 +399,7 @@ function criarWebView(
     fullscreen: true, // Abrir em tela cheia
     autoHideMenuBar: true, // Esconder barra de menu automaticamente
     show: false, // Exibir somente após validar carregamento
+    icon: getAppIconPath(),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -2673,6 +2679,8 @@ ipcMain.handle(
     }
   },
 );
+
+ipcMain.handle('get-app-version', () => app.getVersion());
 
 ipcMain.handle('get-ponto-venda', async (): Promise<string | null> => {
   const value = store.get('pontoVendaBalanca');

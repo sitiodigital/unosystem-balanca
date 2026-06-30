@@ -88,9 +88,10 @@ function rebuildAndRestart() {
 console.log('🚀 Iniciando modo desenvolvimento...');
 rebuildAndRestart();
 
-// Monitorar mudanças nos arquivos fonte
+// Monitorar mudanças nos arquivos fonte e na logo oficial
 const srcDir = path.join(__dirname, '../src');
-const watcher = chokidar.watch(srcDir, {
+const logoPath = path.join(__dirname, '../unosystem.svg');
+const watcher = chokidar.watch([srcDir, logoPath], {
   ignored: /(^|[\/\\])\../, // ignorar arquivos ocultos
   persistent: true,
   ignoreInitial: true,
@@ -98,8 +99,8 @@ const watcher = chokidar.watch(srcDir, {
 
 watcher.on('change', (filePath) => {
   const ext = path.extname(filePath);
-  if (['.ts', '.html', '.css'].includes(ext)) {
-    console.log(`📝 Arquivo alterado: ${path.relative(srcDir, filePath)}`);
+  if (['.ts', '.html', '.css', '.svg'].includes(ext)) {
+    console.log(`📝 Arquivo alterado: ${path.relative(path.join(__dirname, '..'), filePath)}`);
     
     // Debounce para evitar múltiplas compilações
     if (restartTimeout) {

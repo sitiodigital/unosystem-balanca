@@ -28,6 +28,7 @@ declare global {
       >;
       getPontoVenda: () => Promise<string | null>;
       setPontoVenda: (pontoVendaId: string | null) => Promise<void>;
+      getVersion: () => Promise<string>;
       onErroConexaoSistema: (
         callback: (payload: { mensagem: string; endereco?: string }) => void,
       ) => void;
@@ -431,6 +432,13 @@ if (document.readyState === 'loading') {
 
 function inicializarAplicacao() {
   console.log('Inicializando aplicação...');
+
+  if (window.balanca.getVersion) {
+    window.balanca.getVersion().then((version) => {
+      const el = document.getElementById('appVersion');
+      if (el) el.textContent = `Versão ${version}`;
+    });
+  }
 
   if (window.balanca.onErroConexaoSistema) {
     window.balanca.onErroConexaoSistema(({ mensagem }) => {

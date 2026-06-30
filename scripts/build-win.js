@@ -25,12 +25,12 @@ const env = {
   ElectronRebuild_disable: 'true',
 };
 
-// Converter PNG para ICO antes do build
-console.log('🔄 Convertendo ícone PNG para ICO...\n');
+// Converter ícone antes do build (já gerado pelo `pnpm build`, garantir atualização)
+console.log('🔄 Garantindo ícones atualizados...\n');
 try {
-  execSync('node scripts/convert-icon.js', { stdio: 'inherit', cwd: path.join(__dirname, '..') });
+  execSync('node scripts/generate-icons.js', { stdio: 'inherit', cwd: path.join(__dirname, '..') });
 } catch (error) {
-  console.error('❌ Erro ao converter ícone:', error.message);
+  console.error('❌ Erro ao gerar ícones:', error.message);
   process.exit(1);
 }
 

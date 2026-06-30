@@ -53,6 +53,8 @@ contextBridge.exposeInMainWorld('balanca', {
   setPontoVenda: (pontoVendaId: string | null) =>
     ipcRenderer.invoke('set-ponto-venda', pontoVendaId),
 
+  getVersion: () => ipcRenderer.invoke('get-app-version') as Promise<string>,
+
   // Notificação de falha ao conectar ao endereço do sistema
   onErroConexaoSistema: (
     callback: (payload: { mensagem: string; endereco?: string }) => void,

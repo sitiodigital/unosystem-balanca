@@ -24,13 +24,30 @@ filesToCopy.forEach((file) => {
   }
 });
 
-// Copiar todos os arquivos de imagem (png, jpg, jpeg, gif, svg, webp)
+// Remover logo antiga se ainda existir no dist
+const legacyLogo = path.join(distDir, 'logo.png');
+if (fs.existsSync(legacyLogo)) {
+  fs.unlinkSync(legacyLogo);
+  console.log('Removido: logo.png (legado)');
+}
+
+// Copiar logo oficial (fonte única na raiz do projeto)
+const svgSource = path.join(__dirname, '../unosystem.svg');
+const svgDest = path.join(distDir, 'unosystem.svg');
+if (fs.existsSync(svgSource)) {
+  fs.copyFileSync(svgSource, svgDest);
+  console.log('Copiado: unosystem.svg');
+} else {
+  console.warn('Arquivo não encontrado:', svgSource);
+}
+
+// Copiar arquivos de imagem do renderer (exceto logos antigas)
 const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'];
 if (fs.existsSync(srcDir)) {
   const files = fs.readdirSync(srcDir);
   files.forEach((file) => {
     const ext = path.extname(file).toLowerCase();
-    if (imageExtensions.includes(ext)) {
+    if (imageExtensions.includes(ext) && file !== 'logo.png') {
       const srcFile = path.join(srcDir, file);
       const distFile = path.join(distDir, file);
       fs.copyFileSync(srcFile, distFile);
