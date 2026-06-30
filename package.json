@@ -1,6 +1,6 @@
 {
   "name": "unosystem-balanca",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Aplicação desktop Electron para configuração e comunicação com balança via porta serial",
   "main": "dist/main.js",
   "scripts": {
@@ -76,7 +76,7 @@
           ]
         }
       ],
-      "icon": "assets/512x512.png"
+      "icon": "assets/icon.ico"
     },
     "mac": {
       "icon": "assets/512x512.png",

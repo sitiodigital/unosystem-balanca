@@ -3,6 +3,5 @@
     <clipPath id="c3"><rect x="0" y="0" width="512" height="512" rx="110"/></clipPath>
   </defs>
   <rect x="0" y="0" width="512" height="512" rx="110" fill="#4A9FD4"/>
-  <text x="256" y="256" font-family="Arial Black, Arial, sans-serif" font-weight="900"
-        font-size="460" fill="white" text-anchor="middle" dominant-baseline="central" clip-path="url(#c3)">U</text>
+  <path clip-path="url(#c3)" fill="#FFFFFF" d="M128 108h64v188c0 36 28 64 64 64s64-28 64-64V108h64v192c0 72-56 124-128 124s-128-52-128-124V108z"/>
 </svg>
