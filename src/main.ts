@@ -37,6 +37,8 @@ let ultimoPesoEnviadoWebViewValor: number | null = null;
 let ultimoPesoEnviadoWebViewMs = 0;
 let ultimaLeituraSerialMs = 0;
 let solicitacaoPesoEmAndamento = false;
+type ModoLeituraPeso = 'poll' | 'demanda';
+let modoLeituraPesoAtual: ModoLeituraPeso = 'demanda';
 // Flag para controlar se há instrução explícita de abrir tela inicial
 let deveAbrirTelaInicial: boolean = false;
 // Flag global para controlar se a janela principal pode ser mostrada
@@ -590,8 +592,10 @@ function inicializarMessageChannel(): void {
         // isso indica que o usuário solicitou o peso (clicou no botão)
         port2.onmessage = function(event) {
           console.log('Solicitação de peso recebida do JavaScript via port:', event.data);
-          // Quando receber 'message', solicitar um novo peso da balança
-          // Usar função global para comunicação rápida
+          // 'poll' = leitura contínua (não envia zero em instabilidade transitória)
+          // 'demanda' / 'message' = leitura sob demanda (zero imediato em leitura inválida)
+          window.__electronLeituraPesoModo =
+            event.data === 'poll' ? 'poll' : 'demanda';
           if (typeof window.__electronSolicitarPeso === 'function') {
             window.__electronSolicitarPeso();
           } else {
@@ -725,12 +729,20 @@ function configurarEscutaSolicitacaoPeso(): void {
     webViewWindow.webContents
       .executeJavaScript(
         `
-      document.getElementById('__electron_solicitar_peso_now__') !== null
+      (function() {
+        if (document.getElementById('__electron_solicitar_peso_now__') === null) {
+          return null;
+        }
+        const modo =
+          window.__electronLeituraPesoModo === 'poll' ? 'poll' : 'demanda';
+        window.__electronLeituraPesoModo = 'demanda';
+        return modo;
+      })()
     `,
       )
-      .then((existe) => {
-        if (existe && !isQuitting) {
-          solicitarPesoParaWebView();
+      .then((modo) => {
+        if (modo && !isQuitting) {
+          solicitarPesoParaWebView(modo === 'poll' ? 'poll' : 'demanda');
         }
         // Continuar verificando apenas se não estiver encerrando
         if (!isQuitting) {
@@ -1045,12 +1057,18 @@ function configurarEscutaESC(): void {
 }
 
 // Função para solicitar peso da balança e enviar para WebView (otimizada para velocidade)
-async function solicitarPesoParaWebView(): Promise<void> {
+async function solicitarPesoParaWebView(
+  modo: ModoLeituraPeso = 'demanda',
+): Promise<void> {
+  modoLeituraPesoAtual = modo;
+
   if (!serialPort || !serialPort.isOpen) {
     console.log(
       'Conexão serial não está aberta, não é possível solicitar peso',
     );
-    enviarPesoParaWebView(PESO_ZERO_MIL);
+    if (modo === 'demanda') {
+      enviarPesoParaWebView(PESO_ZERO_MIL);
+    }
     return;
   }
 
@@ -1083,7 +1101,7 @@ async function solicitarPesoParaWebView(): Promise<void> {
   } catch (error: any) {
     console.log('lerPeso timeout/erro:', error.message);
   } finally {
-    if (!leituraConcluida) {
+    if (!leituraConcluida && modoLeituraPesoAtual === 'demanda') {
       enviarPesoParaWebView(PESO_ZERO_MIL);
     }
     solicitacaoPesoEmAndamento = false;
@@ -2040,11 +2058,17 @@ function registrarEEnviarPesoBruto(
   );
 
   if (resultado.tipo === 'instavel') {
-    enviarPesoInvalidoParaWebView(
-      origem,
-      `peso instável (${resultado.motivo})`,
-      { invocarCallback: false },
-    );
+    if (modoLeituraPesoAtual === 'demanda') {
+      enviarPesoInvalidoParaWebView(
+        origem,
+        `peso instável (${resultado.motivo})`,
+        { invocarCallback: false },
+      );
+    } else {
+      console.log(
+        `[Toledo ${origem}] instável — aguardando estabilização (${resultado.motivo})`,
+      );
+    }
     return null;
   }
 
@@ -2053,7 +2077,11 @@ function registrarEEnviarPesoBruto(
     resultado.tipo === 'captura_zero' ||
     resultado.tipo === 'erro_calibracao'
   ) {
-    return enviarPesoInvalidoParaWebView(origem, resultado.motivo, options);
+    if (modoLeituraPesoAtual === 'demanda') {
+      return enviarPesoInvalidoParaWebView(origem, resultado.motivo, options);
+    }
+    console.warn(`[Toledo ${origem}] ${resultado.motivo} (poll — ignorado)`);
+    return null;
   }
 
   const pesoNormalizado = extrairPesoNormalizadoDoResultadoToledo(
@@ -2061,11 +2089,17 @@ function registrarEEnviarPesoBruto(
     origem,
   );
   if (!pesoNormalizado) {
-    return enviarPesoInvalidoParaWebView(
-      origem,
-      `resposta inválida: ${resultado.motivo}`,
-      options,
+    if (modoLeituraPesoAtual === 'demanda') {
+      return enviarPesoInvalidoParaWebView(
+        origem,
+        `resposta inválida: ${resultado.motivo}`,
+        options,
+      );
+    }
+    console.log(
+      `[Toledo ${origem}] resposta inválida (poll — ignorada): ${resultado.motivo}`,
     );
+    return null;
   }
 
   const { pesoEmKg, pesoNumerico } = pesoNormalizado;
