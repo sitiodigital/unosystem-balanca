@@ -1050,12 +1050,8 @@ async function solicitarPesoParaWebView(): Promise<void> {
     console.log(
       'Conexão serial não está aberta, não é possível solicitar peso',
     );
+    enviarPesoParaWebView(PESO_ZERO_MIL);
     return;
-  }
-
-  // Reenviar cache imediatamente (poll da WebView)
-  if (ultimoPesoNumericoEnviado !== null) {
-    enviarPesoParaWebView(ultimoPesoNumericoEnviado);
   }
 
   const agora = Date.now();
@@ -1069,11 +1065,13 @@ async function solicitarPesoParaWebView(): Promise<void> {
 
   solicitacaoPesoEmAndamento = true;
   ultimaLeituraSerialMs = agora;
+  let leituraConcluida = false;
 
   try {
     if (comandoFuncionando) {
       try {
         await lerPesoRapido(comandoFuncionando, TIMEOUT_LEITURA_PESO_MS);
+        leituraConcluida = true;
         return;
       } catch (error: any) {
         console.log('lerPesoRapido timeout/erro:', error.message);
@@ -1081,9 +1079,13 @@ async function solicitarPesoParaWebView(): Promise<void> {
     }
 
     await lerPeso(TIMEOUT_LEITURA_PESO_MS, true);
+    leituraConcluida = true;
   } catch (error: any) {
     console.log('lerPeso timeout/erro:', error.message);
   } finally {
+    if (!leituraConcluida) {
+      enviarPesoParaWebView(PESO_ZERO_MIL);
+    }
     solicitacaoPesoEmAndamento = false;
   }
 }
@@ -1997,6 +1999,25 @@ function limparCachePeso(): void {
   ultimoResultadoParseToledo = null;
 }
 
+function enviarPesoInvalidoParaWebView(
+  origem: string,
+  motivo: string,
+  options: { invocarCallback?: boolean } = {},
+): string {
+  const { invocarCallback = true } = options;
+  console.log(`[Toledo ${origem}] ${motivo} — enviando ${PESO_ZERO_KG} kg`);
+  ultimoPesoBrutoRecebido = null;
+  ultimoPesoEmKg = PESO_ZERO_KG;
+  ultimoPesoNumericoEnviado = PESO_ZERO_MIL;
+  mainWindow?.webContents.send('peso-balanca', PESO_ZERO_KG);
+  enviarPesoParaWebView(PESO_ZERO_MIL);
+  if (invocarCallback && callbackPesoRecebido) {
+    callbackPesoRecebido(PESO_ZERO_KG);
+    callbackPesoRecebido = null;
+  }
+  return PESO_ZERO_KG;
+}
+
 function registrarEEnviarPesoBruto(
   pesoBruto: string,
   origem: string,
@@ -2019,7 +2040,11 @@ function registrarEEnviarPesoBruto(
   );
 
   if (resultado.tipo === 'instavel') {
-    console.log(`[Toledo ${origem}] aguardando estabilização (${resultado.motivo})`);
+    enviarPesoInvalidoParaWebView(
+      origem,
+      `peso instável (${resultado.motivo})`,
+      { invocarCallback: false },
+    );
     return null;
   }
 
@@ -2028,8 +2053,7 @@ function registrarEEnviarPesoBruto(
     resultado.tipo === 'captura_zero' ||
     resultado.tipo === 'erro_calibracao'
   ) {
-    console.warn(`[Toledo ${origem}] ${resultado.motivo}`);
-    return null;
+    return enviarPesoInvalidoParaWebView(origem, resultado.motivo, options);
   }
 
   const pesoNormalizado = extrairPesoNormalizadoDoResultadoToledo(
@@ -2037,8 +2061,11 @@ function registrarEEnviarPesoBruto(
     origem,
   );
   if (!pesoNormalizado) {
-    console.log(`[Toledo ${origem}] resposta inválida: ${resultado.motivo}`);
-    return null;
+    return enviarPesoInvalidoParaWebView(
+      origem,
+      `resposta inválida: ${resultado.motivo}`,
+      options,
+    );
   }
 
   const { pesoEmKg, pesoNumerico } = pesoNormalizado;
