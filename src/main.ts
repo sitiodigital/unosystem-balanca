@@ -38,7 +38,9 @@ let ultimoPesoEnviadoWebViewMs = 0;
 let ultimaLeituraSerialMs = 0;
 let solicitacaoPesoEmAndamento = false;
 type ModoLeituraPeso = 'poll' | 'demanda';
-let modoLeituraPesoAtual: ModoLeituraPeso = 'demanda';
+let modoLeituraPesoAtual: ModoLeituraPeso = 'poll';
+let leiturasZeroConsecutivasPoll = 0;
+const LEITURAS_ZERO_CONSECUTIVAS_POLL = 4;
 // Flag para controlar se há instrução explícita de abrir tela inicial
 let deveAbrirTelaInicial: boolean = false;
 // Flag global para controlar se a janela principal pode ser mostrada
@@ -2015,6 +2017,29 @@ function limparCachePeso(): void {
   ultimoPesoEnviadoWebViewMs = 0;
   ultimaLeituraSerialMs = 0;
   ultimoResultadoParseToledo = null;
+  leiturasZeroConsecutivasPoll = 0;
+}
+
+/** Leitura contínua do parser serial — nunca tratar como demanda. */
+function resolverModoLeituraParaOrigem(origem: string): ModoLeituraPeso {
+  if (
+    origem === 'parser' ||
+    origem.startsWith('serial-direto')
+  ) {
+    return 'poll';
+  }
+  return modoLeituraPesoAtual;
+}
+
+/** Em poll, só publica peso positivo; zero/negativo não sobrescreve leitura anterior. */
+function devePublicarPesoNaWebView(
+  pesoNumerico: number,
+  modo: ModoLeituraPeso,
+): boolean {
+  if (modo === 'poll' && pesoNumerico <= 0) {
+    return false;
+  }
+  return true;
 }
 
 function enviarPesoInvalidoParaWebView(
@@ -2042,6 +2067,7 @@ function registrarEEnviarPesoBruto(
   options: { invocarCallback?: boolean } = {},
 ): string | null {
   const { invocarCallback = true } = options;
+  const modoEfetivo = resolverModoLeituraParaOrigem(origem);
 
   if (!pesoBruto || pesoBruto.trim().length === 0) {
     console.log(`[Toledo ${origem}] campo vazio — ignorado`);
@@ -2054,11 +2080,12 @@ function registrarEEnviarPesoBruto(
   console.log(
     `[Toledo ${origem}] decisão: tipo=${resultado.tipo}` +
       (resultado.protocolo ? ` protocolo=${resultado.protocolo}` : '') +
+      ` modo=${modoEfetivo}` +
       ` motivo="${resultado.motivo}"`,
   );
 
   if (resultado.tipo === 'instavel') {
-    if (modoLeituraPesoAtual === 'demanda') {
+    if (modoEfetivo === 'demanda') {
       enviarPesoInvalidoParaWebView(
         origem,
         `peso instável (${resultado.motivo})`,
@@ -2077,7 +2104,7 @@ function registrarEEnviarPesoBruto(
     resultado.tipo === 'captura_zero' ||
     resultado.tipo === 'erro_calibracao'
   ) {
-    if (modoLeituraPesoAtual === 'demanda') {
+    if (modoEfetivo === 'demanda') {
       return enviarPesoInvalidoParaWebView(origem, resultado.motivo, options);
     }
     console.warn(`[Toledo ${origem}] ${resultado.motivo} (poll — ignorado)`);
@@ -2089,7 +2116,7 @@ function registrarEEnviarPesoBruto(
     origem,
   );
   if (!pesoNormalizado) {
-    if (modoLeituraPesoAtual === 'demanda') {
+    if (modoEfetivo === 'demanda') {
       return enviarPesoInvalidoParaWebView(
         origem,
         `resposta inválida: ${resultado.motivo}`,
@@ -2107,6 +2134,38 @@ function registrarEEnviarPesoBruto(
   console.log(
     `[Toledo ${origem}] peso aceito: ${pesoEmKg} kg (raw=${pesoNumerico}, protocolo=${resultado.protocolo ?? 'n/d'})`,
   );
+
+  if (!devePublicarPesoNaWebView(pesoNumerico, modoEfetivo)) {
+    if (modoEfetivo === 'poll' && pesoNumerico <= 0) {
+      leiturasZeroConsecutivasPoll++;
+      if (leiturasZeroConsecutivasPoll >= LEITURAS_ZERO_CONSECUTIVAS_POLL) {
+        leiturasZeroConsecutivasPoll = 0;
+        console.log(
+          `[Toledo ${origem}] zero sustentado em poll — publicando ${PESO_ZERO_KG} kg`,
+        );
+        ultimoPesoBrutoRecebido = pesoBruto;
+        ultimoPesoEmKg = PESO_ZERO_KG;
+        ultimoPesoNumericoEnviado = PESO_ZERO_MIL;
+        mainWindow?.webContents.send('peso-balanca', PESO_ZERO_KG);
+        enviarPesoParaWebView(PESO_ZERO_MIL);
+      } else {
+        console.log(
+          `[Toledo ${origem}] peso zero/negativo em poll (${leiturasZeroConsecutivasPoll}/${LEITURAS_ZERO_CONSECUTIVAS_POLL}) — aguardando confirmação`,
+        );
+      }
+    } else {
+      console.log(
+        `[Toledo ${origem}] peso ${pesoEmKg} kg ignorado na WebView (modo poll, sem peso positivo)`,
+      );
+    }
+    if (invocarCallback && callbackPesoRecebido) {
+      callbackPesoRecebido(pesoEmKg);
+      callbackPesoRecebido = null;
+    }
+    return null;
+  }
+
+  leiturasZeroConsecutivasPoll = 0;
 
   if (
     ultimoPesoNumericoEnviado === pesoNumerico &&
