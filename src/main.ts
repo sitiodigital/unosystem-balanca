@@ -5,6 +5,10 @@ import { SerialPort } from 'serialport';
 import { ReadlineParser } from '@serialport/parser-readline';
 import { Transform } from 'stream';
 import {
+  deveReutilizarConexao,
+  erroAberturaSerialTransiente,
+} from './serial-reabertura';
+import {
   disposeAutoUpdater,
   initAutoUpdater,
 } from './updater/auto-updater.service';
@@ -21,6 +25,8 @@ let mainWindow: BrowserWindow | null = null;
 let webViewWindow: BrowserWindow | null = null;
 let serialPort: SerialPort | null = null;
 let parser: ReadlineParser | null = null;
+let capturaDadosSerial: Transform | null = null;
+let configConexaoSerialAtual: SerialConfig | null = null;
 // Callback para processar peso quando recebido diretamente
 let callbackPesoRecebido: ((peso: string) => void) | null = null;
 // Flag para controlar se o MessageChannel já foi inicializado na WebView
@@ -1104,64 +1110,88 @@ function lerPesoRapido(
   });
 }
 
+const ATRASO_LIBERACAO_PORTA_MS = 400;
+const TENTATIVAS_ABERTURA_SERIAL = 3;
+
+function aguardar(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function destruirFluxoSerial(
+  fluxo: { removeAllListeners: () => void; destroy: () => void } | null,
+): void {
+  if (!fluxo) {
+    return;
+  }
+  try {
+    fluxo.removeAllListeners();
+    fluxo.destroy();
+  } catch (err) {
+    console.error('Erro ao destruir fluxo serial:', err);
+  }
+}
+
 /**
- * Fecha a conexão serial e remove todos os listeners
- * Esta função garante que a porta serial seja completamente liberada
+ * Fecha a conexão serial e remove todos os listeners.
+ * A leitura é interrompida antes do CloseHandle. No Windows, fechar a COM
+ * com um ReadFile pendente deixa o driver recusando o próximo SetCommState
+ * (error code 31).
  */
 function fecharConexaoSerial(): Promise<void> {
   return new Promise((resolve) => {
-    // Limpar callback de peso recebido
     callbackPesoRecebido = null;
     limparCachePeso();
     solicitacaoPesoEmAndamento = false;
+    configConexaoSerialAtual = null;
 
-    // Remover todos os listeners do parser antes de destruí-lo
-    if (parser) {
-      try {
-        parser.removeAllListeners();
-        // Remover parser do pipe se ainda estiver conectado
-        if (serialPort && serialPort.isOpen) {
-          parser.unpipe();
-        }
-      } catch (err) {
-        console.error('Erro ao remover listeners do parser:', err);
-      }
-      parser = null;
-    }
+    const porta = serialPort;
+    const captura = capturaDadosSerial;
+    const leitor = parser;
+    serialPort = null;
+    capturaDadosSerial = null;
+    parser = null;
 
-    // Fechar porta serial e remover todos os listeners
-    if (serialPort) {
-      try {
-        // Remover todos os listeners antes de fechar
-        serialPort.removeAllListeners('data');
-        serialPort.removeAllListeners('error');
-        serialPort.removeAllListeners('open');
-        serialPort.removeAllListeners('close');
+    const liberarFluxos = () => {
+      destruirFluxoSerial(leitor);
+      destruirFluxoSerial(captura);
+    };
 
-        if (serialPort.isOpen) {
-          console.log('Fechando porta serial:', serialPort.path);
-          serialPort.close((err) => {
-            if (err) {
-              console.error('Erro ao fechar porta serial:', err);
-            } else {
-              console.log('Porta serial fechada com sucesso');
-            }
-            serialPort = null;
-            // Aguardar um pouco para garantir que a porta foi liberada
-            setTimeout(() => resolve(), 100);
-          });
-        } else {
-          serialPort = null;
-          resolve();
-        }
-      } catch (err) {
-        console.error('Erro ao fechar porta serial:', err);
-        serialPort = null;
-        resolve();
-      }
-    } else {
+    if (!porta) {
+      liberarFluxos();
       resolve();
+      return;
     }
+
+    try {
+      porta.pause();
+      porta.unpipe();
+      porta.removeAllListeners('data');
+      porta.removeAllListeners('open');
+      porta.removeAllListeners('close');
+      porta.removeAllListeners('error');
+      porta.on('error', () => {
+        // Leitura cancelada durante o fechamento.
+      });
+    } catch (err) {
+      console.error('Erro ao interromper leitura serial:', err);
+    }
+
+    if (!porta.isOpen) {
+      liberarFluxos();
+      resolve();
+      return;
+    }
+
+    console.log('Fechando porta serial:', porta.path);
+    porta.close((err) => {
+      if (err) {
+        console.error('Erro ao fechar porta serial:', err);
+      } else {
+        console.log('Porta serial fechada com sucesso');
+      }
+      liberarFluxos();
+      setTimeout(() => resolve(), ATRASO_LIBERACAO_PORTA_MS);
+    });
   });
 }
 
@@ -1245,13 +1275,58 @@ async function limparRecursosCompletamente(): Promise<void> {
 }
 
 function abrirConexaoSerial(config: SerialConfig): Promise<void> {
-  return new Promise(async (resolve, reject) => {
-    // Fechar conexão anterior antes de abrir nova
+  if (
+    deveReutilizarConexao(
+      Boolean(serialPort?.isOpen),
+      configConexaoSerialAtual,
+      config,
+    )
+  ) {
+    console.log('Reutilizando conexão serial já aberta:', config.port);
+    return Promise.resolve();
+  }
+
+  return abrirConexaoSerialNova(config);
+}
+
+async function abrirConexaoSerialNova(config: SerialConfig): Promise<void> {
+  let ultimoErro: unknown;
+
+  for (
+    let tentativa = 1;
+    tentativa <= TENTATIVAS_ABERTURA_SERIAL;
+    tentativa++
+  ) {
     await fecharConexaoSerial();
+    try {
+      await abrirPortaSerial(config);
+      return;
+    } catch (error: unknown) {
+      ultimoErro = error;
+      const mensagem =
+        error instanceof Error ? error.message : String(error ?? '');
+      const podeTentarDeNovo =
+        erroAberturaSerialTransiente(mensagem) &&
+        tentativa < TENTATIVAS_ABERTURA_SERIAL;
 
-    // Aguardar um pouco mais para garantir que a porta foi completamente liberada
-    await new Promise((r) => setTimeout(r, 200));
+      if (!podeTentarDeNovo) {
+        throw error;
+      }
 
+      console.warn(
+        `Falha transitória ao abrir ${config.port} (${mensagem}). Tentativa ${
+          tentativa + 1
+        }/${TENTATIVAS_ABERTURA_SERIAL}...`,
+      );
+      await aguardar(500 * tentativa);
+    }
+  }
+
+  throw ultimoErro;
+}
+
+function abrirPortaSerial(config: SerialConfig): Promise<void> {
+  return new Promise((resolve, reject) => {
     console.log('Abrindo conexão serial com configuração:', config);
 
     serialPort = new SerialPort({
@@ -1261,13 +1336,14 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
       parity: config.parity,
       stopBits: config.stopBits,
       autoOpen: false,
-      // Configurações de fluxo de controle - algumas balanças precisam disso
-      rtscts: false, // RTS/CTS hardware flow control
-      xon: false, // XON/XOFF software flow control
+      // Não derruba o DTR no close. Com hupcl ligado, o próximo Open
+      // no Windows falha em SetCommState com error code 31.
+      hupcl: false,
+      rtscts: false,
+      xon: false,
       xoff: false,
       xany: false,
-      // Configurações adicionais
-      highWaterMark: 64 * 1024, // Buffer size
+      highWaterMark: 64 * 1024,
     });
 
     serialPort.on('error', (err) => {
@@ -1317,16 +1393,26 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
         path: serialPort!.path,
       });
 
-      // Configurar sinais de controle (algumas balanças precisam disso)
+      // Configurar sinais de controle (algumas balanças precisam disso).
+      // Com hupcl desligado o DTR não sobe sozinho; o set() afirma RTS/DTR
+      // sem usar o hangup que quebra o próximo Open no Windows.
       try {
-        serialPort!.set({ rts: true, dtr: true });
+        await new Promise<void>((resolveSet, rejectSet) => {
+          serialPort!.set({ rts: true, dtr: true }, (setErr) => {
+            if (setErr) {
+              rejectSet(setErr);
+              return;
+            }
+            resolveSet();
+          });
+        });
         console.log('Sinais RTS e DTR configurados');
       } catch (err) {
         console.log('Aviso: Não foi possível configurar RTS/DTR:', err);
       }
 
       // Criar um Transform stream para capturar dados brutos antes do parser
-      const dataCapture = new Transform({
+      capturaDadosSerial = new Transform({
         transform(chunk: Buffer, encoding: string, callback: () => void) {
           const hex = chunk.toString('hex');
           const text = chunk.toString('utf8', 0, Math.min(chunk.length, 100)); // Limitar tamanho do log
@@ -1357,7 +1443,7 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
       // Ou CR (\r) no protocolo TOLEDO Continuous
       // Vamos usar ETX como delimitador principal
       const newParser = serialPort!
-        .pipe(dataCapture)
+        .pipe(capturaDadosSerial)
         .pipe(new ReadlineParser({ delimiter: Buffer.from([0x03]) })); // ETX como delimitador
       parser = newParser;
 
@@ -1374,8 +1460,12 @@ function abrirConexaoSerial(config: SerialConfig): Promise<void> {
         registrarEEnviarPesoBruto(pesoBruto, 'parser');
       });
 
-      // Pequeno delay para garantir que a conexão está estável
       setTimeout(() => {
+        if (!serialPort?.isOpen) {
+          reject(new Error('A porta serial foi fechada antes de estabilizar'));
+          return;
+        }
+        configConexaoSerialAtual = config;
         resolve();
       }, 100);
     });
@@ -2712,11 +2802,14 @@ ipcMain.handle('testar-conexao', async (_, config: SerialConfig) => {
 
     console.log('Peso lido com sucesso:', peso);
 
-    await fecharConexaoSerial();
+    // A porta permanece aberta. Fechar e reabrir no Windows faz o
+    // SetCommState falhar com error code 31 a partir da segunda tentativa.
     return { sucesso: true, peso };
   } catch (error: any) {
     console.error('Erro ao testar conexão:', error);
-    await fecharConexaoSerial();
+    if (!serialPort?.isOpen) {
+      await fecharConexaoSerial();
+    }
     return {
       sucesso: false,
       erro: error.message || 'Erro desconhecido ao testar conexão',
