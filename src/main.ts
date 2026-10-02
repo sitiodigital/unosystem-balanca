@@ -59,7 +59,6 @@ const CODIGOS_ERRO_CARREGAMENTO_IGNORAR = new Set([-3]);
 // Armazenar IDs dos timers recursivos para poder cancelá-los durante o encerramento
 let timerVerificarSolicitacao: NodeJS.Timeout | null = null;
 let timerVerificarNavegacao: NodeJS.Timeout | null = null;
-let timerVerificarESC: NodeJS.Timeout | null = null;
 
 const gotTheLock = app.requestSingleInstanceLock();
 
@@ -128,6 +127,9 @@ function createWindow() {
 
   // Remover menu completamente
   mainWindow.setMenuBarVisibility(false);
+
+  // Alt+F4 sai do fullscreen
+  configurarAltF4SairFullscreen(mainWindow);
 
   mainWindow.loadFile(path.join(__dirname, 'renderer/index.html'));
 
@@ -342,10 +344,6 @@ function destruirWebViewSemEncerrarApp(): void {
     clearTimeout(timerVerificarSolicitacao);
     timerVerificarSolicitacao = null;
   }
-  if (timerVerificarESC) {
-    clearTimeout(timerVerificarESC);
-    timerVerificarESC = null;
-  }
 
   if (webViewWindow && !webViewWindow.isDestroyed()) {
     webViewWindow.removeAllListeners('close');
@@ -420,6 +418,9 @@ function criarWebView(
 
   // Remover menu completamente
   webViewWindow.setMenuBarVisibility(false);
+
+  // Alt+F4 sai do fullscreen
+  configurarAltF4SairFullscreen(webViewWindow);
 
   console.log('Criando WebView com endereço:', enderecoSistema);
 
@@ -499,8 +500,6 @@ function criarWebView(
       inicializarMessageChannel();
       // Configurar escuta para mensagens de navegação (deve ser configurado após o carregamento)
       configurarEscutaNavegacao();
-      // Configurar captura de ESC para sair do fullscreen
-      configurarEscutaESC();
     }, 300); // Reduzido de 500ms para 300ms
   });
 
@@ -959,103 +958,22 @@ function configurarEscutaNavegacao(): void {
   timerVerificarNavegacao = setTimeout(verificarNavegacao, 500);
 }
 
-// Função para configurar escuta de ESC na WebView para sair do fullscreen
-function configurarEscutaESC(): void {
-  if (!webViewWindow || webViewWindow.isDestroyed()) {
-    return;
-  }
-
-  console.log('Configurando escuta de ESC na WebView');
-
-  // Injetar código JavaScript para capturar ESC
-  webViewWindow.webContents
-    .executeJavaScript(
-      `
-    (function() {
-      // Criar função para solicitar sair do fullscreen
-      if (!window.__electronSairFullscreen) {
-        window.__electronSairFullscreen = function() {
-          // Criar elemento temporário que será detectado pelo processo principal
-          const el = document.createElement('div');
-          el.id = '__electron_sair_fullscreen__';
-          el.style.display = 'none';
-          document.body.appendChild(el);
-          setTimeout(() => el.remove(), 50);
-        };
-      }
-      
-      // Escutar tecla ESC
-      if (window.__electronESCListener) {
-        document.removeEventListener('keydown', window.__electronESCListener);
-      }
-      
-      window.__electronESCListener = function(event) {
-        // Verificar se a tecla pressionada é ESC (Escape)
-        if (event.key === 'Escape' || event.keyCode === 27) {
-          event.preventDefault();
-          event.stopPropagation();
-          console.log('ESC pressionado na WebView');
-          if (typeof window.__electronSairFullscreen === 'function') {
-            window.__electronSairFullscreen();
-          }
-          return false;
-        }
-      };
-      
-      document.addEventListener('keydown', window.__electronESCListener, true);
-      console.log('Escuta de ESC configurada na WebView');
-    })();
-  `,
-    )
-    .then(() => {
-      console.log('Script de ESC injetado com sucesso na WebView');
-    })
-    .catch((err) => {
-      console.error('Erro ao injetar script de ESC:', err);
-    });
-
-  // Verificar periodicamente se há solicitação para sair do fullscreen
-  const verificarESC = () => {
-    // Parar verificação se o app está encerrando ou a janela foi destruída
-    if (isQuitting || !webViewWindow || webViewWindow.isDestroyed()) {
-      timerVerificarESC = null;
-      return;
+// Alt+F4 sai do fullscreen quando a janela está em tela cheia.
+// Fora do fullscreen o Alt+F4 segue o comportamento padrão (fecha o app).
+// O ESC não é capturado: fica livre para o sistema carregado na janela.
+function configurarAltF4SairFullscreen(janela: BrowserWindow): void {
+  janela.webContents.on('before-input-event', (event, input) => {
+    if (
+      input.type === 'keyDown' &&
+      input.alt &&
+      input.key === 'F4' &&
+      !janela.isDestroyed() &&
+      janela.isFullScreen()
+    ) {
+      event.preventDefault();
+      janela.setFullScreen(false);
     }
-
-    webViewWindow.webContents
-      .executeJavaScript(
-        `
-      document.getElementById('__electron_sair_fullscreen__') !== null
-    `,
-      )
-      .then((existe) => {
-        if (existe && !isQuitting) {
-          console.log(
-            'Solicitação para sair do fullscreen detectada na WebView',
-          );
-          if (webViewWindow && !webViewWindow.isDestroyed()) {
-            webViewWindow.setFullScreen(false);
-          }
-        }
-        // Continuar verificando apenas se não estiver encerrando
-        if (!isQuitting) {
-          timerVerificarESC = setTimeout(verificarESC, 100);
-        } else {
-          timerVerificarESC = null;
-        }
-      })
-      .catch((err) => {
-        console.error('Erro ao verificar ESC:', err);
-        if (!isQuitting) {
-          timerVerificarESC = setTimeout(verificarESC, 100);
-        } else {
-          timerVerificarESC = null;
-        }
-      });
-  };
-
-  // Iniciar verificação após um pequeno delay
-  timerVerificarESC = setTimeout(verificarESC, 500);
+  });
 }
 
 // Função para solicitar peso da balança e enviar para WebView (otimizada para velocidade)
@@ -1270,11 +1188,6 @@ async function limparRecursosCompletamente(): Promise<void> {
     clearTimeout(timerVerificarNavegacao);
     timerVerificarNavegacao = null;
     console.log('Timer verificarNavegacao cancelado');
-  }
-  if (timerVerificarESC) {
-    clearTimeout(timerVerificarESC);
-    timerVerificarESC = null;
-    console.log('Timer verificarESC cancelado');
   }
 
   // 2. Fechar conexão serial (remove listeners e fecha porta)
