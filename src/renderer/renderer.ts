@@ -179,8 +179,9 @@ function mostrarMensagem(texto: string, tipo: 'success' | 'error' | 'info') {
   }, 5000);
 }
 
-// Função para obter configuração do formulário
-function obterConfiguracao(): SerialConfig | null {
+// Função para obter configuração do formulário.
+// Porta serial é obrigatória só no teste de conexão; em "Salvar e Prosseguir" é facultativa.
+function obterConfiguracao(exigirPorta = true): SerialConfig | null {
   const porta = portaSerialSelect.value;
   const baudRate = parseInt(
     (document.getElementById('baudRate') as HTMLSelectElement).value,
@@ -194,7 +195,7 @@ function obterConfiguracao(): SerialConfig | null {
     (document.getElementById('stopBits') as HTMLSelectElement).value,
   ) as 1 | 2;
 
-  if (!porta) {
+  if (exigirPorta && !porta) {
     mostrarMensagem('Por favor, selecione uma porta serial', 'error');
     return null;
   }
@@ -382,13 +383,18 @@ form.addEventListener('submit', async (e) => {
     return;
   }
 
-  const config = obterConfiguracao();
+  const config = obterConfiguracao(false);
   if (!config) return;
 
   btnConectar.disabled = true;
   btnConectar.textContent = 'Conectando...';
 
-  mostrarMensagem('Conectando à balança e abrindo sistema...', 'info');
+  mostrarMensagem(
+    config.port
+      ? 'Conectando à balança e abrindo sistema...'
+      : 'Abrindo sistema...',
+    'info',
+  );
 
   const pontoVenda = pontoVendaSelect ? pontoVendaSelect.value : '';
   try {

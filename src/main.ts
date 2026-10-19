@@ -2620,10 +2620,9 @@ function verificarDadosObrigatoriosPreenchidos(
     return false;
   }
 
-  // Verificar se todos os campos obrigatórios estão preenchidos
+  // Porta serial é facultativa; demais campos de serial vêm com padrão no formulário
   const camposObrigatorios = [
     config.enderecoSistema,
-    config.portaSerial,
     config.baudRate,
     config.dataBits,
     config.parity,
@@ -2743,8 +2742,14 @@ async function verificarERedirecionarAutomaticamente(): Promise<boolean> {
   };
 
   try {
-    // Abrir conexão serial
-    await abrirConexaoSerial(serialConfig);
+    // Abrir conexão serial apenas se houver porta configurada
+    if (serialConfig.port && serialConfig.port.trim().length > 0) {
+      await abrirConexaoSerial(serialConfig);
+    } else {
+      console.log(
+        'Porta serial não configurada; abrindo sistema sem conexão serial',
+      );
+    }
 
     // Criar WebView
     const webViewAberta = await criarWebView(config.enderecoSistema);
@@ -2907,8 +2912,14 @@ ipcMain.handle(
         };
       }
 
-      // Abrir conexão serial
-      await abrirConexaoSerial(config);
+      // Abrir conexão serial apenas se a porta foi informada (facultativa ao salvar)
+      if (config.port && config.port.trim().length > 0) {
+        await abrirConexaoSerial(config);
+      } else {
+        console.log(
+          'Porta serial não informada; prosseguindo sem conexão serial',
+        );
+      }
 
       // Criar WebView
       const webViewAberta = await criarWebView(enderecoSistema, {
